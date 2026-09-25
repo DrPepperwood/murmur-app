@@ -29,6 +29,11 @@ export function setCurrentUser(userId) {
   currentUserId = userId;
 }
 
+/** The signed-in user's UUID, or null if signed out. */
+export function getCurrentUser() {
+  return currentUserId;
+}
+
 export function slugOf(handle) {
   return handle?.startsWith("@") ? handle.slice(1) : handle;
 }
