@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as postsApi from "../lib/api/posts";
 import { supabase } from "../lib/supabaseClient";
-import { cacheProfile, slugForId } from "./profileCache";
+import { cacheProfile, slugForId, getCurrentUser } from "./profileCache";
 
 function timeAgo(iso) {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -49,10 +49,24 @@ function toAppPost(row) {
     reposted: row.reposted_by_me,
     bookmarked: row.bookmarked_by_me,
     edited: !!row.edited_at,
+    isPinned: !!row.is_pinned,
     replies: [], // filled in by fetchReplyTree() for detail views; feed rows don't need the tree
-    poll: null,  // filled in by fetchPostDetail() when present
+    poll: buildPoll(row.pollOptions), // only present on fetchPost()'s result; feed/reply rows don't include it
     quoted: row.quoted_post_id ? { id: row.quoted_post_id } : null, // resolved lazily; see note in README
   };
+}
+
+/** poll_options (+ their poll_votes) -> the { options, votedOption } shape the app renders. */
+function buildPoll(pollOptions) {
+  if (!pollOptions || pollOptions.length === 0) return null;
+  const me = getCurrentUser();
+  let votedOption = null;
+  const options = pollOptions.map((o) => {
+    const votes = o.poll_votes ?? [];
+    if (me && votes.some((v) => v.user_id === me)) votedOption = o.id;
+    return { id: o.id, text: o.text, votes: votes.length };
+  });
+  return { options, duration: null, votedOption };
 }
 
 /** Flat reply rows -> the nested { id, author, text, replies: [...] } tree the app renders. */
