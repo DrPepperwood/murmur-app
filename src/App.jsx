@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useContext, createContext } from "react";
+import React, { useState, useEffect, useRef, useContext, createContext, useMemo } from "react";
 import { Heart, Repeat2, MessageCircle, Feather, Sparkles, ArrowLeft, Calendar, CornerDownRight, Loader2, ImagePlus, X, MapPin, Link2, Camera, Users, Search, Bell, UserPlus, Mail, Send, BadgeCheck, MoreHorizontal, Bookmark, Settings, VolumeX, ShieldOff, BarChart2, Check, Plus, Pin, List, Trash2, Eye, Flag, UserCircle, Video } from "lucide-react";
 import { useAuth } from "./hooks/useAuth";
 import { setCurrentUser } from "./hooks/profileCache";
@@ -131,12 +131,34 @@ const SEED_POSTS = [
   },
 ];
 
-const TRENDS = [
-  { tag: "#murmuration", posts: "12.4K murmurs", query: "starlings" },
-  { tag: "#officestapler", posts: "3,201 murmurs", query: "stapler" },
-  { tag: "#dashi", posts: "980 murmurs", query: "dashi" },
-  { tag: "finals week", posts: "6,742 murmurs", query: "finals week" },
-];
+/**
+ * Derive live trending hashtags from whatever posts are currently loaded.
+ * Counts #tag occurrences across post text, ranks by count. This only sees
+ * posts already in the loaded feed window (same caveat as the other
+ * feed-derived views noted in the README) rather than a true site-wide
+ * count, but it's real data, not the old hardcoded fake trends.
+ */
+function computeTrends(posts, limit = 5) {
+  const counts = new Map();
+  for (const p of posts) {
+    const tags = p.text?.match(/#[a-z0-9_]+/gi) ?? [];
+    const seenInThisPost = new Set();
+    for (const raw of tags) {
+      const tag = raw.toLowerCase();
+      if (seenInThisPost.has(tag)) continue; // count each post once per tag
+      seenInThisPost.add(tag);
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([tag, count]) => ({
+      tag,
+      posts: `${count} ${count === 1 ? "murmur" : "murmurs"}`,
+      query: tag.slice(1),
+    }));
+}
 
 const SEED_NOTIFICATIONS = [
   { id: nextId(), type: "like", actor: "kestrel", postId: 3, text: "liked your reply", time: "2h", read: true },
@@ -1597,6 +1619,7 @@ function SearchPage({ query, setQuery, posts, onLike, onRepost, onOpenPost, onOp
     .filter(([h]) => h !== "you" && !following.has(h) && !blocked.has(h))
     .slice(0, 3);
   const popularPosts = [...posts].sort((a, b) => b.likes - a.likes).slice(0, 3);
+  const trends = computeTrends(posts);
 
   return (
     <div>
@@ -1616,13 +1639,13 @@ function SearchPage({ query, setQuery, posts, onLike, onRepost, onOpenPost, onOp
         />
       </div>
 
-      {!q && (
+      {!q && trends.length > 0 && (
         <div>
           <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: 0.4, color: PALETTE.inkSoft, marginBottom: 8, padding: "0 4px" }}>
             TRENDING
           </div>
           <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden", marginBottom: 20 }}>
-            {TRENDS.map((t, i) => (
+            {trends.map((t, i) => (
               <div
                 key={t.tag}
                 onClick={() => setQuery(t.query)}
@@ -3368,6 +3391,7 @@ export default function Murmur() {
   const visibleNotifications = notifications.filter((n) => !blocked.has(n.actor));
   const unreadCount = visibleNotifications.filter((n) => !n.read).length;
   const visiblePosts = posts.filter((p) => !hiddenAuthors.has(p.author));
+  const trends = useMemo(() => computeTrends(posts), [posts]);
 
   const [conversations, setConversations] = useState(() => JSON.parse(JSON.stringify(SEED_CONVERSATIONS)));
   const [groupChats, setGroupChats] = useState({});
@@ -3698,9 +3722,6 @@ export default function Murmur() {
             >
               <Bookmark size={16} fill={bookmarks.size > 0 ? "currentColor" : "none"} />
             </button>
-            <span style={{ display: isMobile ? "none" : "inline-block", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: PALETTE.inkSoft, border: `1px solid ${PALETTE.border}`, borderRadius: 20, padding: "4px 10px" }}>
-              demo · fake data
-            </span>
           </span>
         </header>
 
@@ -3930,16 +3951,16 @@ export default function Murmur() {
             )}
           </main>
 
-          {view.type === "feed" && (
+          {view.type === "feed" && trends.length > 0 && (
             <aside style={{ width: isMobile ? "100%" : 240, flexShrink: 0 }}>
               <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, padding: "14px 16px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
                   <Sparkles size={14} color={PALETTE.gold} />
                   <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: 0.4, color: PALETTE.inkSoft }}>IN THE FLOCK</span>
                 </div>
-                {TRENDS.map((t, i) => (
+                {trends.map((t, i) => (
                   <div
-                    key={i}
+                    key={t.tag}
                     onClick={() => goSearch(t.query)}
                     role="button"
                     tabIndex={0}
