@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useContext, createContext } from "r
 import { Heart, Repeat2, MessageCircle, Feather, Sparkles, ArrowLeft, Calendar, CornerDownRight, Loader2, ImagePlus, X, MapPin, Link2, Camera, Users, Search, Bell, UserPlus, Mail, Send, BadgeCheck, MoreHorizontal, Bookmark, Settings, VolumeX, ShieldOff, BarChart2, Check, Plus, Pin, List, Trash2, Eye, Flag, UserCircle, Video } from "lucide-react";
 import { useAuth } from "./hooks/useAuth";
 import { setCurrentUser } from "./hooks/profileCache";
+import { usePosts, usePostDetail } from "./hooks/usePosts";
+import * as postsApi from "./lib/api/posts";
 
 const THEMES = {
   light: {
@@ -243,6 +245,15 @@ function removeNode(nodes, targetId) {
   return nodes.filter((n) => n.id !== targetId).map((n) => ({ ...n, replies: removeNode(n.replies, targetId) }));
 }
 
+function findNode(nodes, targetId) {
+  for (const n of nodes) {
+    if (n.id === targetId) return n;
+    const found = findNode(n.replies, targetId);
+    if (found) return found;
+  }
+  return null;
+}
+
 function filterBlockedReplies(nodes, blocked) {
   return nodes.filter((n) => !blocked.has(n.author)).map((n) => ({ ...n, replies: filterBlockedReplies(n.replies, blocked) }));
 }
@@ -259,7 +270,10 @@ function readFileAsDataUrl(file, cb) {
 }
 
 function isVideoUrl(url) {
-  return typeof url === "string" && url.startsWith("data:video");
+  if (typeof url !== "string") return false;
+  // data: URIs (local preview before upload) carry their type in the prefix;
+  // real uploaded files (Supabase Storage URLs) are detected by extension.
+  return url.startsWith("data:video") || /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url);
 }
 
 function MediaContent({ src, alt, style }) {
@@ -269,7 +283,7 @@ function MediaContent({ src, alt, style }) {
   return <img src={src} alt={alt} style={style} />;
 }
 
-function PhotoPicker({ image, setImage, size = "normal" }) {
+function PhotoPicker({ image, setImage, size = "normal", onFile }) {
   const inputRef = useRef(null);
   return (
     <div>
@@ -280,7 +294,10 @@ function PhotoPicker({ image, setImage, size = "normal" }) {
         style={{ display: "none" }}
         onChange={(e) => {
           const file = e.target.files && e.target.files[0];
-          if (file) readFileAsDataUrl(file, setImage);
+          if (file) {
+            readFileAsDataUrl(file, setImage);
+            onFile?.(file);
+          }
           e.target.value = "";
         }}
       />
@@ -294,7 +311,7 @@ function PhotoPicker({ image, setImage, size = "normal" }) {
             }}
           />
           <button
-            onClick={() => setImage(null)}
+            onClick={() => { setImage(null); onFile?.(null); }}
             aria-label="Remove attachment"
             style={{
               position: "absolute", top: 6, right: 6, width: 24, height: 24, borderRadius: "50%", border: "none",
@@ -720,7 +737,7 @@ function QuotedPostPreview({ quoted, onOpenPost, onOpenProfile, onSearch }) {
   );
 }
 
-function InlineComposer({ text, setText, image, setImage, onSubmit, onCancel, placeholder }) {
+function InlineComposer({ text, setText, image, setImage, imageFile, setImageFile, onSubmit, onCancel, placeholder }) {
   const { profiles } = useContext(ProfilesContext);
   const overLimit = text.length > MAX_POST_LENGTH;
   const canSubmit = (text.trim() || image) && !overLimit;
@@ -740,7 +757,7 @@ function InlineComposer({ text, setText, image, setImage, onSubmit, onCancel, pl
             lineHeight: 1.4, padding: "8px 10px", boxSizing: "border-box", overflowWrap: "break-word", wordBreak: "break-word",
           }}
         />
-        <PhotoPicker image={image} setImage={setImage} size="small" />
+        <PhotoPicker image={image} setImage={setImage} onFile={setImageFile} size="small" />
         <div style={{ display: "flex", alignItems: "center", gap: 12, justifyContent: "flex-end", marginTop: 6 }}>
           <CharCounter length={text.length} max={MAX_POST_LENGTH} />
           <button
@@ -753,7 +770,7 @@ function InlineComposer({ text, setText, image, setImage, onSubmit, onCancel, pl
             Cancel
           </button>
           <button
-            onClick={() => { if (canSubmit) onSubmit(text.trim(), image); }}
+            onClick={() => { if (canSubmit) onSubmit(text.trim(), image, imageFile); }}
             disabled={!canSubmit}
             style={{
               background: PALETTE.coral, color: "#FFF7F2", border: "none", borderRadius: 999,
@@ -774,6 +791,7 @@ function ReplyThread({ node, depth, onLike, onRepost, onOpenProfile, onAddReply,
   const [composing, setComposing] = useState(false);
   const [replyDraft, setReplyDraft] = useState("");
   const [replyDraftImage, setReplyDraftImage] = useState(null);
+  const [replyDraftImageFile, setReplyDraftImageFile] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(node.text);
   const author = profiles[node.author];
@@ -875,8 +893,10 @@ function ReplyThread({ node, depth, onLike, onRepost, onOpenProfile, onAddReply,
               setText={setReplyDraft}
               image={replyDraftImage}
               setImage={setReplyDraftImage}
-              onCancel={() => { setComposing(false); setReplyDraft(""); setReplyDraftImage(null); }}
-              onSubmit={(text, image) => { onAddReply(node.id, text, image); setComposing(false); setReplyDraft(""); setReplyDraftImage(null); }}
+              imageFile={replyDraftImageFile}
+              setImageFile={setReplyDraftImageFile}
+              onCancel={() => { setComposing(false); setReplyDraft(""); setReplyDraftImage(null); setReplyDraftImageFile(null); }}
+              onSubmit={(text, image, imageFile) => { onAddReply(node.id, text, image, imageFile); setComposing(false); setReplyDraft(""); setReplyDraftImage(null); setReplyDraftImageFile(null); }}
             />
           )}
         </div>
@@ -1772,6 +1792,7 @@ function SearchPage({ query, setQuery, posts, onLike, onRepost, onOpenPost, onOp
 function QuotePage({ postId, posts, profiles, onSubmit, onBack }) {
   const [text, setText] = useState("");
   const [image, setImage] = useState(null);
+  const [imageFile, setImageFile] = useState(null);
   const original = posts.find((p) => p.id === postId);
 
   if (!original) {
@@ -1806,7 +1827,7 @@ function QuotePage({ postId, posts, profiles, onSubmit, onBack }) {
                 overflowWrap: "break-word", wordBreak: "break-word",
               }}
             />
-            <PhotoPicker image={image} setImage={setImage} size="small" />
+            <PhotoPicker image={image} setImage={setImage} onFile={setImageFile} size="small" />
             <div style={{ border: `1px solid ${PALETTE.border}`, borderRadius: 12, padding: 12, marginTop: 12 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
                 <Avatar user={author} size={20} />
@@ -1826,7 +1847,7 @@ function QuotePage({ postId, posts, profiles, onSubmit, onBack }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 14, marginTop: 12 }}>
           <CharCounter length={text.length} max={MAX_POST_LENGTH} />
           <button
-            onClick={() => { if (text.length <= MAX_POST_LENGTH) onSubmit(postId, text.trim(), image); }}
+            onClick={() => { if (text.length <= MAX_POST_LENGTH) onSubmit(postId, text.trim(), imageFile); }}
             disabled={text.length > MAX_POST_LENGTH}
             style={{
               background: PALETTE.coral, color: "#FFF7F2", border: "none", borderRadius: 999, padding: "9px 18px",
@@ -2813,18 +2834,23 @@ function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack
   );
 }
 
-function PostPage({ postId, posts, onLike, onRepost, onOpenProfile, onBack, onAddReply, onLikeReply, onRepostReply, onQuote, onEdit, onDelete, onBookmark, bookmarks, onEditReply, onDeleteReply, blocked, onSearch, onVote, pinnedPostId, onTogglePin, onView, onViewAnalytics, onReport, reportedPosts }) {
+function PostPage({ postId, currentUserId, onLike, onRepost, onOpenProfile, onBack, onQuote, onEdit, onDelete, onBookmark, onVote, onTogglePin, blocked, onSearch, onViewAnalytics, onReport, reportedPosts }) {
+  const { post, loading, reload, addReply } = usePostDetail(postId);
   const [composing, setComposing] = useState(false);
   const [replyDraft, setReplyDraft] = useState("");
   const [replyDraftImage, setReplyDraftImage] = useState(null);
-  const post = posts.find((p) => p.id === postId);
-  const ready = useReadyDelay(postId);
+  const [replyDraftImageFile, setReplyDraftImageFile] = useState(null);
 
-  useEffect(() => {
-    if (post) onView(postId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [postId]);
-
+  if (loading) {
+    return (
+      <div>
+        <BackBar onBack={onBack} label="Back" />
+        <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden" }} aria-busy="true" aria-label="Loading murmur">
+          <SkeletonPost large />
+        </div>
+      </div>
+    );
+  }
   if (!post) {
     return (
       <div>
@@ -2845,25 +2871,57 @@ function PostPage({ postId, posts, onLike, onRepost, onOpenProfile, onBack, onAd
       </div>
     );
   }
-  if (!ready) {
-    return (
-      <div>
-        <BackBar onBack={onBack} label="Back" />
-        <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden" }} aria-busy="true" aria-label="Loading murmur">
-          <SkeletonPost large />
-        </div>
-      </div>
-    );
-  }
+
+  // Root-post actions go through the same feed-level handlers as everywhere
+  // else (so the main feed list stays in sync), then refresh this page's own
+  // copy of the post since it's tracked separately via usePostDetail.
+  const handleLike = async (id) => { await onLike(id); reload(); };
+  const handleRepost = async (id) => { await onRepost(id); reload(); };
+  const handleBookmark = async (id) => { await onBookmark(id); reload(); };
+  const handleTogglePin = async (id) => { await onTogglePin(id); reload(); };
+  const handleVote = async (id, optionId) => { await onVote(id, optionId); reload(); };
+  const handleEdit = async (id, text) => { await onEdit(id, text); reload(); };
+  const handleDelete = async (id) => { await onDelete(id); onBack(); };
+
+  // Reply-level actions: replies are just posts with reply_to_id set, but
+  // they live only in this page's own reply tree (not the main feed list),
+  // so these call the API directly and refetch the tree afterward.
+  const handleReplyLike = async (replyId) => {
+    const target = findNode(post.replies, replyId);
+    if (!target) return;
+    await postsApi.toggleLike(replyId, currentUserId, target.liked);
+    reload();
+  };
+  const handleReplyRepost = async (replyId) => {
+    const target = findNode(post.replies, replyId);
+    if (!target) return;
+    await postsApi.toggleRepost(replyId, currentUserId, target.reposted);
+    reload();
+  };
+  const handleEditReply = async (replyId, text) => {
+    await postsApi.editPost(replyId, text);
+    reload();
+  };
+  const handleDeleteReply = async (replyId) => {
+    await postsApi.deletePost(replyId);
+    reload();
+  };
+  const handleAddReply = async (targetId, text, image, imageFile) => {
+    // targetId is null for a reply directly on the root post (vs. a reply to
+    // a specific reply) — reply_to_id must point at the actual parent row,
+    // so fall back to this page's own postId in that case.
+    await addReply(currentUserId, targetId ?? postId, text, imageFile);
+  };
+
   const visibleReplies = filterBlockedReplies(post.replies, blocked);
   return (
     <div>
       <BackBar onBack={onBack} label="Back" />
       <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden", marginBottom: 18 }}>
         <Post
-          post={post} onLike={onLike} onRepost={onRepost} onOpenProfile={onOpenProfile} large
-          onReplyClick={() => setComposing((c) => !c)} onQuote={onQuote} onEdit={onEdit} onDelete={(id) => { onDelete(id); onBack(); }}
-          onBookmark={onBookmark} bookmarked={bookmarks.has(post.id)} onSearch={onSearch} onVote={onVote} isPinned={post.id === pinnedPostId} onTogglePin={onTogglePin}
+          post={post} onLike={handleLike} onRepost={handleRepost} onOpenProfile={onOpenProfile} large
+          onReplyClick={() => setComposing((c) => !c)} onQuote={onQuote} onEdit={handleEdit} onDelete={handleDelete}
+          onBookmark={handleBookmark} bookmarked={post.bookmarked} onSearch={onSearch} onVote={handleVote} isPinned={post.isPinned} onTogglePin={handleTogglePin}
           onViewAnalytics={onViewAnalytics} onReport={onReport} isReported={reportedPosts.has(post.id)}
         />
         {composing && (
@@ -2874,8 +2932,10 @@ function PostPage({ postId, posts, onLike, onRepost, onOpenProfile, onBack, onAd
               setText={setReplyDraft}
               image={replyDraftImage}
               setImage={setReplyDraftImage}
-              onCancel={() => { setComposing(false); setReplyDraft(""); setReplyDraftImage(null); }}
-              onSubmit={(text, image) => { onAddReply(post.id, null, text, image); setComposing(false); setReplyDraft(""); setReplyDraftImage(null); }}
+              imageFile={replyDraftImageFile}
+              setImageFile={setReplyDraftImageFile}
+              onCancel={() => { setComposing(false); setReplyDraft(""); setReplyDraftImage(null); setReplyDraftImageFile(null); }}
+              onSubmit={(text, image, imageFile) => { handleAddReply(null, text, image, imageFile); setComposing(false); setReplyDraft(""); setReplyDraftImage(null); setReplyDraftImageFile(null); }}
             />
           </div>
         )}
@@ -2904,12 +2964,12 @@ function PostPage({ postId, posts, onLike, onRepost, onOpenProfile, onBack, onAd
           visibleReplies.map((node) => (
             <ReplyThread
               key={node.id} node={node} depth={0}
-              onLike={(replyId) => onLikeReply(post.id, replyId)}
-              onRepost={(replyId) => onRepostReply(post.id, replyId)}
+              onLike={handleReplyLike}
+              onRepost={handleReplyRepost}
               onOpenProfile={onOpenProfile}
-              onAddReply={(targetId, text, image) => onAddReply(post.id, targetId, text, image)}
-              onEditReply={(replyId, text) => onEditReply(post.id, replyId, text)}
-              onDeleteReply={(replyId) => onDeleteReply(post.id, replyId)}
+              onAddReply={handleAddReply}
+              onEditReply={handleEditReply}
+              onDeleteReply={handleDeleteReply}
               onSearch={onSearch}
             />
           ))
@@ -2919,7 +2979,7 @@ function PostPage({ postId, posts, onLike, onRepost, onOpenProfile, onBack, onAd
   );
 }
 
-function Feed({ posts, onLike, onRepost, onOpenPost, onOpenProfile, draft, setDraft, draftImage, setDraftImage, postDraft, onLoadMore, loadingMore, reachedEnd, feedTab, setFeedTab, following, onQuote, onEdit, onDelete, onBookmark, bookmarks, onSearch, onVote, draftPoll, setDraftPoll, pinnedPostId, onTogglePin, onReport, reportedPosts }) {
+function Feed({ posts, onLike, onRepost, onOpenPost, onOpenProfile, draft, setDraft, draftImage, setDraftImage, setDraftImageFile, postDraft, onLoadMore, loadingMore, reachedEnd, feedTab, setFeedTab, following, onQuote, onEdit, onDelete, onBookmark, bookmarks, onSearch, onVote, draftPoll, setDraftPoll, pinnedPostId, onTogglePin, onReport, reportedPosts }) {
   const { profiles } = useContext(ProfilesContext);
   const sentinelRef = useRef(null);
   const [selectedIndex, setSelectedIndex] = useState(-1);
@@ -2992,7 +3052,7 @@ function Feed({ posts, onLike, onRepost, onOpenPost, onOpenProfile, draft, setDr
               rows={2}
               style={{ width: "100%", resize: "none", border: "none", outline: "none", background: "transparent", fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 15, color: PALETTE.ink, lineHeight: 1.5, paddingTop: 8, boxSizing: "border-box", overflowWrap: "break-word", wordBreak: "break-word" }}
             />
-            {!draftPoll && <PhotoPicker image={draftImage} setImage={setDraftImage} />}
+            {!draftPoll && <PhotoPicker image={draftImage} setImage={setDraftImage} onFile={setDraftImageFile} />}
             {!draftImage && (
               draftPoll ? (
                 <PollComposer poll={draftPoll} setPoll={setDraftPoll} onRemove={() => setDraftPoll(null)} />
@@ -3183,7 +3243,6 @@ function AuthPage({ onSignUp, onLogIn, theme }) {
 }
 
 export default function Murmur() {
-  const [posts, setPosts] = useState(SEED_POSTS.map((p) => ({ ...p, liked: false, reposted: false, views: p.likes * 9 + p.reposts * 4 + countReplies(p.replies) * 3 + 40 })));
   const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth < 680 : false));
   const [theme, setTheme] = useState("light");
 
@@ -3192,6 +3251,37 @@ export default function Murmur() {
   useEffect(() => {
     setCurrentUser(user?.id ?? null);
   }, [user]);
+
+  // --- Real posts/feed (Supabase), replacing the old SEED_POSTS local state
+  // and its fake infinite-scroll generator. See MIGRATION.md step 2.
+  const {
+    posts,
+    reachedEnd,
+    loadMore: loadMorePosts,
+    createPost,
+    editPost,
+    deletePost,
+    togglePin,
+    toggleLike,
+    toggleRepost,
+    toggleBookmark,
+    votePoll,
+  } = usePosts(user?.id);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadMore = async () => {
+    if (loadingMore || reachedEnd) return;
+    setLoadingMore(true);
+    try {
+      await loadMorePosts();
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+  // Bookmarks are a boolean on each post from the backend (toAppPost's
+  // `bookmarked` field), but every existing component still expects a Set of
+  // ids to check with `.has(post.id)` — this keeps that contract unchanged.
+  const bookmarks = new Set(posts.filter((p) => p.bookmarked).map((p) => p.id));
+  const pinnedPostId = posts.find((p) => p.isPinned)?.id ?? null;
   useEffect(() => {
     // Once signed up, seed the "you" profile's display name/handle from what they entered.
     // (Real backend: profiles.name/handle come from the signup call in useAuth and are
@@ -3215,6 +3305,7 @@ export default function Murmur() {
     setProfiles((prev) => ({ ...prev, [handle]: { ...prev[handle], ...updates } }));
   const [draft, setDraft] = useState("");
   const [draftImage, setDraftImage] = useState(null);
+  const [draftImageFile, setDraftImageFile] = useState(null);
   const [draftPoll, setDraftPoll] = useState(null);
   const [view, setView] = useState({ type: "feed" });
   const [coverImage, setCoverImage] = useState(null);
@@ -3375,124 +3466,31 @@ export default function Murmur() {
       }
       return next;
     });
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [pagesLoaded, setPagesLoaded] = useState(0);
-  const loadTimer = useRef(null);
+  const voteOnPoll = votePoll;
 
-  const reachedEnd = pagesLoaded >= MAX_PAGES;
-
-  const loadMore = () => {
-    if (loadingMore || reachedEnd) return;
-    setLoadingMore(true);
-    loadTimer.current = setTimeout(() => {
-      setPosts((prev) => {
-        const startIndex = pagesLoaded * PAGE_SIZE;
-        const batch = Array.from({ length: PAGE_SIZE }, (_, i) => generatePost(startIndex + i));
-        return [...prev, ...batch];
-      });
-      setPagesLoaded((n) => n + 1);
-      setLoadingMore(false);
-    }, 700);
-  };
-
-  useEffect(() => () => clearTimeout(loadTimer.current), []);
-
-  const toggleLike = (id) =>
-    setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, liked: !p.liked, likes: p.liked ? p.likes - 1 : p.likes + 1 } : p)));
-
-  const toggleRepost = (id) =>
-    setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, reposted: !p.reposted, reposts: p.reposted ? p.reposts - 1 : p.reposts + 1 } : p)));
-
-  const postDraft = () => {
+  const postDraft = async () => {
     const text = draft.trim();
     const pollValid = draftPoll && draftPoll.options.filter((o) => o.trim()).length >= 2;
     if ((!text && !draftImage && !pollValid) || draft.length > MAX_POST_LENGTH) return;
-    const newId = nextId();
-    const poll = pollValid
-      ? { options: draftPoll.options.filter((o) => o.trim()).map((t, i) => ({ id: i + 1, text: t.trim(), votes: 0 })), duration: draftPoll.duration, votedOption: null }
-      : null;
-    setPosts((prev) => [
-      { id: newId, author: "you", time: "now", text, likes: 0, reposts: 0, replies: [], liked: false, reposted: false, image: draftImage, poll, views: Math.floor(Math.random() * 4) + 1 },
-      ...prev,
-    ]);
-
+    const pollOptions = pollValid ? draftPoll.options.filter((o) => o.trim()).map((o) => o.trim()) : null;
+    const isVideo = draftImageFile && draftImageFile.type.startsWith("video");
     setDraft("");
     setDraftImage(null);
+    setDraftImageFile(null);
     setDraftPoll(null);
-
-    const t = setTimeout(() => {
-      const actor = GEN_AUTHORS[Math.floor(Math.random() * GEN_AUTHORS.length)];
-      setPosts((prev) => prev.map((p) => (p.id === newId ? { ...p, likes: p.likes + 1, views: p.views + Math.floor(Math.random() * 40) + 15 } : p)));
-      addNotification({
-        type: "like",
-        actor,
-        postId: newId,
-        text: text ? (text.length > 70 ? `${text.slice(0, 70)}\u2026` : text) : null,
-        time: "now",
-      });
-    }, 4000 + Math.random() * 3000);
-    timersRef.current.push(t);
+    await createPost({
+      text,
+      imageFile: isVideo ? null : draftImageFile,
+      videoFile: isVideo ? draftImageFile : null,
+      pollOptions,
+      quotedPostId: null,
+    });
   };
-
-  const voteOnPoll = (postId, optionId) =>
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id !== postId || !p.poll || p.poll.votedOption !== null || p.author === "you") return p;
-        return {
-          ...p,
-          poll: {
-            ...p.poll,
-            votedOption: optionId,
-            options: p.poll.options.map((o) => (o.id === optionId ? { ...o, votes: o.votes + 1 } : o)),
-          },
-        };
-      })
-    );
-
-  const toggleReplyLike = (postId, replyId) =>
-    setPosts((prev) =>
-      prev.map((p) =>
-        p.id !== postId ? p : { ...p, replies: updateNode(p.replies, replyId, (n) => ({ ...n, liked: !n.liked, likes: n.liked ? n.likes - 1 : n.likes + 1 })) }
-      )
-    );
-
-  const toggleReplyRepost = (postId, replyId) =>
-    setPosts((prev) =>
-      prev.map((p) =>
-        p.id !== postId ? p : { ...p, replies: updateNode(p.replies, replyId, (n) => ({ ...n, reposted: !n.reposted, reposts: n.reposted ? n.reposts - 1 : n.reposts + 1 })) }
-      )
-    );
-
-  const addReply = (postId, targetId, text, image) => {
-    const newNode = reply("you", "now", text, [], image || null);
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id !== postId) return p;
-        if (targetId === null) return { ...p, replies: [...p.replies, newNode] };
-        return { ...p, replies: insertReply(p.replies, targetId, newNode) };
-      })
-    );
-  };
-
-  const editReply = (postId, replyId, text) =>
-    setPosts((prev) =>
-      prev.map((p) => (p.id !== postId ? p : { ...p, replies: updateNode(p.replies, replyId, (n) => ({ ...n, text, edited: true })) }))
-    );
-
-  const deleteReply = (postId, replyId) =>
-    setPosts((prev) => prev.map((p) => (p.id !== postId ? p : { ...p, replies: removeNode(p.replies, replyId) })));
-
-  const editPost = (id, text) => setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, text, edited: true } : p)));
-
-  const [pinnedPostId, setPinnedPostId] = useState(null);
-  const togglePin = (id) => setPinnedPostId((prev) => (prev === id ? null : id));
 
   const [reportedPosts, setReportedPosts] = useState(new Set());
   const [reportedProfiles, setReportedProfiles] = useState(new Set());
   const reportPost = (id, reason) => setReportedPosts((prev) => new Set(prev).add(id));
   const reportProfile = (handle, reason) => setReportedProfiles((prev) => new Set(prev).add(handle));
-
-  const onView = (id) => setPosts((prev) => prev.map((p) => (p.id === id ? { ...p, views: (p.views || 0) + 1 } : p)));
 
   const [lists, setLists] = useState({});
   const createList = (name) => {
@@ -3518,34 +3516,8 @@ export default function Murmur() {
       return { ...prev, [listId]: { ...l, members: l.members.filter((h) => h !== handle) } };
     });
 
-  const deletePost = (id) => {
-    setPosts((prev) => prev.filter((p) => p.id !== id));
-    setBookmarks((prev) => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-    setPinnedPostId((prev) => (prev === id ? null : prev));
-  };
-
-  const [bookmarks, setBookmarks] = useState(new Set());
-  const toggleBookmark = (id) =>
-    setBookmarks((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
-  const submitQuote = (postId, text, image) => {
-    const original = posts.find((p) => p.id === postId);
-    if (!original) return;
-    const quotedSnapshot = { id: original.id, author: original.author, text: original.text, image: original.image, time: original.time };
-    setPosts((prev) => [
-      { id: nextId(), author: "you", time: "now", text, likes: 0, reposts: 0, replies: [], liked: false, reposted: false, image, quoted: quotedSnapshot, views: Math.floor(Math.random() * 4) + 1 },
-      ...prev.map((p) => (p.id === postId ? { ...p, reposts: p.reposts + 1 } : p)),
-    ]);
+  const submitQuote = async (postId, text, imageFile) => {
+    await createPost({ text, imageFile, videoFile: null, pollOptions: null, quotedPostId: postId });
     goFeed();
   };
 
@@ -3745,6 +3717,7 @@ export default function Murmur() {
                 setDraft={setDraft}
                 draftImage={draftImage}
                 setDraftImage={setDraftImage}
+                setDraftImageFile={setDraftImageFile}
                 postDraft={postDraft}
                 onLoadMore={loadMore}
                 loadingMore={loadingMore}
@@ -3805,12 +3778,10 @@ export default function Murmur() {
             )}
             {view.type === "post" && (
               <PostPage
-                postId={view.id} posts={posts} onLike={toggleLike} onRepost={toggleRepost} onOpenProfile={goProfile} onBack={goFeed}
-                onAddReply={addReply} onLikeReply={toggleReplyLike} onRepostReply={toggleReplyRepost}
-                onQuote={goQuote} onEdit={editPost} onDelete={deletePost} onBookmark={toggleBookmark} bookmarks={bookmarks}
-                onEditReply={editReply} onDeleteReply={deleteReply} blocked={blocked} onSearch={goSearch} onVote={voteOnPoll}
-                pinnedPostId={pinnedPostId} onTogglePin={togglePin}
-                onView={onView} onViewAnalytics={goAnalytics} onReport={reportPost} reportedPosts={reportedPosts}
+                postId={view.id} currentUserId={user?.id} onLike={toggleLike} onRepost={toggleRepost} onOpenProfile={goProfile} onBack={goFeed}
+                onQuote={goQuote} onEdit={editPost} onDelete={deletePost} onBookmark={toggleBookmark}
+                blocked={blocked} onSearch={goSearch} onVote={voteOnPoll} onTogglePin={togglePin}
+                onViewAnalytics={goAnalytics} onReport={reportPost} reportedPosts={reportedPosts}
               />
             )}
             {view.type === "analytics" && (
