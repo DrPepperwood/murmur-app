@@ -79,6 +79,28 @@ export async function resolveProfile(idOrSlug) {
   return data;
 }
 
+/**
+ * Like resolveProfile, but always hits the DB instead of returning early on
+ * a partial cache hit. Post authorship caches a *thin* row (no bio, no real
+ * follower/following counts — see toAppPost in usePosts.js) as a side
+ * effect of rendering the feed, so a profile page needs this to fetch the
+ * real, complete row rather than showing that placeholder forever.
+ */
+export async function refreshProfile(idOrSlug) {
+  const targetId = idOrSlug === "you" ? currentUserId : idOrSlug;
+  if (!targetId) return null;
+
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(targetId);
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq(isUuid ? "id" : "handle", isUuid ? targetId : `@${targetId}`)
+    .single();
+  if (error) return null;
+  cacheProfile(data);
+  return data;
+}
+
 export function subscribeToProfileCache(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
