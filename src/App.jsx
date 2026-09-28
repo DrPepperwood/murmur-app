@@ -3,9 +3,11 @@ import { Heart, Repeat2, MessageCircle, Feather, Sparkles, ArrowLeft, Calendar, 
 import { useAuth } from "./hooks/useAuth";
 import { setCurrentUser, getCurrentUser, allCachedProfiles, subscribeToProfileCache, cacheProfile, refreshProfile } from "./hooks/profileCache";
 import { useSocial } from "./hooks/useSocial";
+import { useMessages } from "./hooks/useMessages";
 import { usePosts, usePostDetail } from "./hooks/usePosts";
 import * as postsApi from "./lib/api/posts";
 import * as profilesApi from "./lib/api/profiles";
+import * as giphyApi from "./lib/api/giphy";
 import { uploadAvatar } from "./lib/api/storage";
 
 const THEMES = {
@@ -1297,6 +1299,7 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
   const restPosts = pinnedPost ? authored.filter((p) => p.id !== pinnedPostId) : authored;
   const editable = handle === "you";
   const coverInputRef = useRef(null);
+  const avatarInputRef = useRef(null);
   const ready = useReadyDelay(handle);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(null);
@@ -1405,7 +1408,7 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
             </svg>
           )}
 
-          {editable && (
+          {editable && editing && (
             <>
               <input
                 ref={coverInputRef}
@@ -1446,7 +1449,36 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
         </div>
 
         <div style={{ position: "absolute", left: isMobile ? 14 : 22, bottom: isMobile ? -30 : -38, borderRadius: "50%", border: `4px solid ${PALETTE.bg}`, background: PALETTE.bg, lineHeight: 0 }}>
-          <Avatar user={user} size={isMobile ? 62 : 76} />
+          {editable && editing ? (
+            <div style={{ position: "relative", display: "inline-block", cursor: "pointer" }} onClick={() => avatarInputRef.current && avatarInputRef.current.click()}>
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files && e.target.files[0];
+                  if (file) {
+                    readFileAsDataUrl(file, (dataUrl) => setForm((f) => ({ ...f, photo: dataUrl })));
+                    setForm((f) => ({ ...f, photoFile: file }));
+                  }
+                  e.target.value = "";
+                }}
+              />
+              <Avatar user={{ ...user, photo: form?.photo ?? user.photo }} size={isMobile ? 62 : 76} />
+              <div
+                aria-hidden="true"
+                style={{
+                  position: "absolute", inset: 0, borderRadius: "50%", background: "rgba(31,42,36,0.45)",
+                  display: "flex", alignItems: "center", justifyContent: "center", color: "#FBFAF6",
+                }}
+              >
+                <Camera size={isMobile ? 16 : 18} />
+              </div>
+            </div>
+          ) : (
+            <Avatar user={user} size={isMobile ? 62 : 76} />
+          )}
         </div>
       </div>
 
@@ -2450,6 +2482,86 @@ function TypingBubble({ name }) {
   );
 }
 
+/** Inline search-and-pick panel for GIFs (Giphy), used by both DM and group composers. */
+function GifPicker({ onPick, onClose }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(false);
+    const t = setTimeout(() => {
+      giphyApi
+        .searchGifs(query)
+        .then((rows) => active && setResults(rows))
+        .catch(() => active && setError(true))
+        .finally(() => active && setLoading(false));
+    }, 300);
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
+  }, [query]);
+
+  return (
+    <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, padding: 12, marginBottom: 8 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <input
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search GIFs"
+          style={{
+            flex: 1, border: `1px solid ${PALETTE.border}`, borderRadius: 999, outline: "none", background: PALETTE.bg,
+            fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13.5, color: PALETTE.ink, padding: "7px 14px", boxSizing: "border-box",
+          }}
+        />
+        <button
+          onClick={onClose}
+          aria-label="Close GIF search"
+          style={{
+            width: 32, height: 32, borderRadius: "50%", border: `1px solid ${PALETTE.border}`, background: "transparent",
+            color: PALETTE.inkSoft, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0,
+          }}
+        >
+          <X size={14} />
+        </button>
+      </div>
+      {error ? (
+        <div style={{ textAlign: "center", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5, padding: "12px 0" }}>
+          Couldn't load GIFs right now.
+        </div>
+      ) : loading ? (
+        <div style={{ textAlign: "center", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5, padding: "12px 0" }}>
+          Searching…
+        </div>
+      ) : results.length === 0 ? (
+        <div style={{ textAlign: "center", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5, padding: "12px 0" }}>
+          No GIFs found.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, maxHeight: 220, overflowY: "auto" }}>
+          {results.map((g) => (
+            <img
+              key={g.id}
+              src={g.preview}
+              alt={g.title}
+              onClick={() => onPick(g.url)}
+              style={{ width: "100%", height: 72, objectFit: "cover", borderRadius: 8, cursor: "pointer", display: "block" }}
+            />
+          ))}
+        </div>
+      )}
+      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: PALETTE.inkSoft, textAlign: "right", marginTop: 8 }}>
+        Powered by GIPHY
+      </div>
+    </div>
+  );
+}
+
 function MessagesPage({ conversations, groupChats, onOpenConversation, onOpenGroup, onCreateGroup, blocked, onBack }) {
   const { profiles } = useContext(ProfilesContext);
   const [creatingGroup, setCreatingGroup] = useState(false);
@@ -2466,9 +2578,9 @@ function MessagesPage({ conversations, groupChats, onOpenConversation, onOpenGro
 
   const candidates = Object.keys(profiles).filter((h) => h !== "you" && !blocked.has(h));
   const toggleSelected = (h) => setSelected((prev) => (prev.includes(h) ? prev.filter((x) => x !== h) : [...prev, h]));
-  const submitGroup = () => {
+  const submitGroup = async () => {
     if (selected.length < 2) return;
-    const id = onCreateGroup(groupName.trim(), selected);
+    const id = await onCreateGroup(groupName.trim(), selected);
     setCreatingGroup(false);
     setGroupName("");
     setSelected([]);
@@ -2601,14 +2713,17 @@ function MessagesPage({ conversations, groupChats, onOpenConversation, onOpenGro
   );
 }
 
-function GroupChatPage({ groupId, groupChats, onSend, onOpenProfile, onBack, markRead, typingIndicator }) {
+function GroupChatPage({ groupId, groupChats, onSend, onOpenProfile, onBack, markRead, typingIndicator, useTypingChannel }) {
   const { profiles } = useContext(ProfilesContext);
   const [text, setText] = useState("");
   const [pendingImage, setPendingImage] = useState(null);
+  const [pendingImageFile, setPendingImageFile] = useState(null);
+  const [showGifPicker, setShowGifPicker] = useState(false);
   const fileInputRef = useRef(null);
   const bottomRef = useRef(null);
   const group = groupChats[groupId];
   const isTyping = typingIndicator && typingIndicator.key === groupId;
+  const sendTyping = useTypingChannel(groupId);
 
   useEffect(() => {
     markRead(groupId);
@@ -2632,9 +2747,10 @@ function GroupChatPage({ groupId, groupChats, onSend, onOpenProfile, onBack, mar
   const submit = () => {
     const t = text.trim();
     if (!t && !pendingImage) return;
-    onSend(groupId, t, pendingImage);
+    onSend(groupId, t, pendingImageFile);
     setText("");
     setPendingImage(null);
+    setPendingImageFile(null);
   };
 
   return (
@@ -2706,7 +2822,7 @@ function GroupChatPage({ groupId, groupChats, onSend, onOpenProfile, onBack, mar
         <div style={{ position: "relative", display: "inline-block", marginBottom: 8 }}>
           <MediaContent src={pendingImage} alt="Attachment preview" style={{ maxHeight: 100, borderRadius: 10, border: `1px solid ${PALETTE.border}`, display: "block" }} />
           <button
-            onClick={() => setPendingImage(null)}
+            onClick={() => { setPendingImage(null); setPendingImageFile(null); }}
             aria-label="Remove attachment"
             style={{
               position: "absolute", top: 4, right: 4, width: 20, height: 20, borderRadius: "50%", border: "none",
@@ -2718,6 +2834,17 @@ function GroupChatPage({ groupId, groupChats, onSend, onOpenProfile, onBack, mar
         </div>
       )}
 
+      {showGifPicker && (
+        <GifPicker
+          onPick={(url) => {
+            setPendingImage(url);
+            setPendingImageFile(url);
+            setShowGifPicker(false);
+          }}
+          onClose={() => setShowGifPicker(false)}
+        />
+      )}
+
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input
           ref={fileInputRef}
@@ -2726,13 +2853,16 @@ function GroupChatPage({ groupId, groupChats, onSend, onOpenProfile, onBack, mar
           style={{ display: "none" }}
           onChange={(e) => {
             const file = e.target.files && e.target.files[0];
-            if (file) readFileAsDataUrl(file, setPendingImage);
+            if (file) {
+              readFileAsDataUrl(file, setPendingImage);
+              setPendingImageFile(file);
+            }
             e.target.value = "";
           }}
         />
         <button
           onClick={() => fileInputRef.current && fileInputRef.current.click()}
-          aria-label="Add photo, GIF, or video"
+          aria-label="Add photo or video"
           style={{
             width: 42, height: 42, borderRadius: "50%", border: `1px solid ${PALETTE.border}`, background: "transparent", color: PALETTE.inkSoft,
             display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0,
@@ -2740,9 +2870,21 @@ function GroupChatPage({ groupId, groupChats, onSend, onOpenProfile, onBack, mar
         >
           <ImagePlus size={17} />
         </button>
+        <button
+          onClick={() => setShowGifPicker((v) => !v)}
+          aria-label="Search GIFs"
+          style={{
+            width: 42, height: 42, borderRadius: "50%", border: `1px solid ${showGifPicker ? PALETTE.teal : PALETTE.border}`,
+            background: showGifPicker ? PALETTE.tealSoft : "transparent", color: showGifPicker ? PALETTE.teal : PALETTE.inkSoft,
+            display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0,
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, fontWeight: 600,
+          }}
+        >
+          GIF
+        </button>
         <input
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => { setText(e.target.value); sendTyping(); }}
           onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
           placeholder="Message the group"
           style={{
@@ -2765,15 +2907,20 @@ function GroupChatPage({ groupId, groupChats, onSend, onOpenProfile, onBack, mar
   );
 }
 
-function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack, markRead, blocked, typingIndicator }) {
+function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack, markRead, blocked, typingIndicator, useTypingChannel }) {
   const { profiles } = useContext(ProfilesContext);
   const [text, setText] = useState("");
   const [pendingImage, setPendingImage] = useState(null);
+  const [pendingImageFile, setPendingImageFile] = useState(null);
+  const [showGifPicker, setShowGifPicker] = useState(false);
   const fileInputRef = useRef(null);
   const bottomRef = useRef(null);
   const user = profiles[handle];
   const convo = conversations[handle] || { messages: [], unread: 0 };
-  const isTyping = typingIndicator && typingIndicator.key === handle;
+  // Typing broadcasts are keyed by conversation id (not the handle slug),
+  // since that's the actual Supabase realtime channel this DM lives on.
+  const isTyping = typingIndicator && typingIndicator.key === convo.conversationId;
+  const sendTyping = useTypingChannel(convo.conversationId);
 
   useEffect(() => {
     markRead(handle);
@@ -2786,9 +2933,10 @@ function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack
   const submit = () => {
     const t = text.trim();
     if (!t && !pendingImage) return;
-    onSend(handle, t, pendingImage);
+    onSend(handle, t, pendingImageFile);
     setText("");
     setPendingImage(null);
+    setPendingImageFile(null);
   };
 
   if (blocked.has(handle)) {
@@ -2859,7 +3007,7 @@ function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack
         <div style={{ position: "relative", display: "inline-block", marginBottom: 8 }}>
           <MediaContent src={pendingImage} alt="Attachment preview" style={{ maxHeight: 100, borderRadius: 10, border: `1px solid ${PALETTE.border}`, display: "block" }} />
           <button
-            onClick={() => setPendingImage(null)}
+            onClick={() => { setPendingImage(null); setPendingImageFile(null); }}
             aria-label="Remove attachment"
             style={{
               position: "absolute", top: 4, right: 4, width: 20, height: 20, borderRadius: "50%", border: "none",
@@ -2871,6 +3019,17 @@ function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack
         </div>
       )}
 
+      {showGifPicker && (
+        <GifPicker
+          onPick={(url) => {
+            setPendingImage(url);
+            setPendingImageFile(url);
+            setShowGifPicker(false);
+          }}
+          onClose={() => setShowGifPicker(false)}
+        />
+      )}
+
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input
           ref={fileInputRef}
@@ -2879,13 +3038,16 @@ function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack
           style={{ display: "none" }}
           onChange={(e) => {
             const file = e.target.files && e.target.files[0];
-            if (file) readFileAsDataUrl(file, setPendingImage);
+            if (file) {
+              readFileAsDataUrl(file, setPendingImage);
+              setPendingImageFile(file);
+            }
             e.target.value = "";
           }}
         />
         <button
           onClick={() => fileInputRef.current && fileInputRef.current.click()}
-          aria-label="Add photo, GIF, or video"
+          aria-label="Add photo or video"
           style={{
             width: 42, height: 42, borderRadius: "50%", border: `1px solid ${PALETTE.border}`, background: "transparent", color: PALETTE.inkSoft,
             display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0,
@@ -2893,9 +3055,21 @@ function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack
         >
           <ImagePlus size={17} />
         </button>
+        <button
+          onClick={() => setShowGifPicker((v) => !v)}
+          aria-label="Search GIFs"
+          style={{
+            width: 42, height: 42, borderRadius: "50%", border: `1px solid ${showGifPicker ? PALETTE.teal : PALETTE.border}`,
+            background: showGifPicker ? PALETTE.tealSoft : "transparent", color: showGifPicker ? PALETTE.teal : PALETTE.inkSoft,
+            display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0,
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, fontWeight: 600,
+          }}
+        >
+          GIF
+        </button>
         <input
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => { setText(e.target.value); sendTyping(); }}
           onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
           placeholder={`Message ${user.name.split(" ")[0]}`}
           style={{
@@ -3416,9 +3590,6 @@ export default function Murmur() {
   const [feedTab, setFeedTab] = useState("foryou");
   const [searchQuery, setSearchQuery] = useState("");
   const [notifications, setNotifications] = useState(SEED_NOTIFICATIONS);
-  const timersRef = useRef([]);
-
-  useEffect(() => () => timersRef.current.forEach(clearTimeout), []);
 
   const [notificationPrefs, setNotificationPrefs] = useState({ like: true, repost: true, reply: true, follow: true });
   const notificationPrefsRef = useRef(notificationPrefs);
@@ -3440,81 +3611,22 @@ export default function Murmur() {
   const visiblePosts = posts.filter((p) => !hiddenAuthors.has(p.author));
   const trends = useMemo(() => computeTrends(posts), [posts]);
 
-  const [conversations, setConversations] = useState(() => JSON.parse(JSON.stringify(SEED_CONVERSATIONS)));
-  const [groupChats, setGroupChats] = useState({});
-  const openConvoRef = useRef(null);
-  useEffect(() => {
-    openConvoRef.current = view.type === "dm" ? view.handle : view.type === "group" ? view.id : null;
-  }, [view]);
+  // --- Real DMs/group chats (Supabase), replacing the old mock
+  // conversations/groupChats state and its setTimeout-simulated replies.
+  // See MIGRATION.md step 4. conversations/groupChats/typingIndicator are
+  // already shaped exactly like the old mock state, so the message-list
+  // pages below don't need to change.
+  const {
+    conversations, groupChats, typingIndicator,
+    sendMessage, sendGroupMessage, createGroup: createGroupReal, markRead, useTypingChannel,
+  } = useMessages(user?.id);
 
-  const [typingIndicator, setTypingIndicator] = useState(null);
-
-  const markConversationRead = (handle) =>
-    setConversations((prev) => (prev[handle] ? { ...prev, [handle]: { ...prev[handle], unread: 0 } } : prev));
-
-  const sendMessage = (handle, text, image) => {
-    setConversations((prev) => {
-      const convo = prev[handle] || { messages: [], unread: 0 };
-      return { ...prev, [handle]: { ...convo, messages: [...convo.messages, { id: nextId(), sender: "you", text, image: image || null, time: "now" }] } };
-    });
-    setTypingIndicator({ key: handle, name: profiles[handle] ? profiles[handle].name : "" });
-    const t = setTimeout(() => {
-      const replyText = DM_REPLIES[Math.floor(Math.random() * DM_REPLIES.length)];
-      setTypingIndicator((prev) => (prev && prev.key === handle ? null : prev));
-      setConversations((prev) => {
-        const convo = prev[handle] || { messages: [], unread: 0 };
-        const isOpen = openConvoRef.current === handle;
-        return {
-          ...prev,
-          [handle]: {
-            ...convo,
-            messages: [...convo.messages, { id: nextId(), sender: handle, text: replyText, image: null, time: "now" }],
-            unread: isOpen ? 0 : convo.unread + 1,
-          },
-        };
-      });
-    }, 2200 + Math.random() * 2600);
-    timersRef.current.push(t);
+  const markConversationRead = (handle) => {
+    const id = conversations[handle]?.conversationId;
+    if (id) markRead(id);
   };
-
-  const createGroup = (name, members) => {
-    const id = nextId();
-    setGroupChats((prev) => ({ ...prev, [id]: { id, name: name || members.map((h) => profiles[h].name.split(" ")[0]).join(", "), members, messages: [], unread: 0 } }));
-    return id;
-  };
-
-  const markGroupRead = (id) =>
-    setGroupChats((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], unread: 0 } } : prev));
-
-  const sendGroupMessage = (groupId, text, image) => {
-    const group = groupChats[groupId];
-    if (!group) return;
-    setGroupChats((prev) => {
-      const g = prev[groupId];
-      if (!g) return prev;
-      return { ...prev, [groupId]: { ...g, messages: [...g.messages, { id: nextId(), sender: "you", text, image: image || null, time: "now" }] } };
-    });
-    const replier = group.members[Math.floor(Math.random() * group.members.length)];
-    setTypingIndicator({ key: groupId, name: profiles[replier] ? profiles[replier].name : "" });
-    const t = setTimeout(() => {
-      const replyText = DM_REPLIES[Math.floor(Math.random() * DM_REPLIES.length)];
-      setTypingIndicator((prev) => (prev && prev.key === groupId ? null : prev));
-      setGroupChats((prev) => {
-        const g = prev[groupId];
-        if (!g) return prev;
-        const isOpen = openConvoRef.current === groupId;
-        return {
-          ...prev,
-          [groupId]: {
-            ...g,
-            messages: [...g.messages, { id: nextId(), sender: replier, text: replyText, image: null, time: "now" }],
-            unread: isOpen ? 0 : g.unread + 1,
-          },
-        };
-      });
-    }, 2200 + Math.random() * 2600);
-    timersRef.current.push(t);
-  };
+  const markGroupRead = (id) => markRead(id);
+  const createGroup = async (name, members) => createGroupReal(name, members);
 
   const visibleConversations = Object.fromEntries(Object.entries(conversations).filter(([h]) => !blocked.has(h)));
   const visibleGroupChats = Object.fromEntries(Object.entries(groupChats).filter(([, g]) => g.members.every((h) => !blocked.has(h))));
@@ -3882,6 +3994,7 @@ export default function Murmur() {
                 markRead={markConversationRead}
                 blocked={blocked}
                 typingIndicator={typingIndicator}
+                useTypingChannel={useTypingChannel}
               />
             )}
             {view.type === "group" && (
@@ -3894,6 +4007,7 @@ export default function Murmur() {
                 onBack={goMessages}
                 markRead={markGroupRead}
                 typingIndicator={typingIndicator}
+                useTypingChannel={useTypingChannel}
               />
             )}
             {view.type === "quote" && (
