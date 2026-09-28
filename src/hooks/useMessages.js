@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as messagesApi from "../lib/api/messages";
-import { resolveProfile, slugForId, cacheProfile } from "./profileCache";
+import { resolveProfile, slugForId, cacheProfile, nameForId } from "./profileCache";
 
 function toAppMessage(row) {
   return {
@@ -52,12 +52,19 @@ export function useMessages(currentUserId) {
     reload();
   }, [reload]);
 
+  // `media` is either a raw File (uploaded to Storage) or a plain string URL
+  // (a GIF picked from Giphy is already hosted — no upload needed).
+  const resolveMediaUrl = async (media) => {
+    if (!media) return null;
+    if (typeof media === "string") return media;
+    return (await import("../lib/api/storage")).uploadMessageMedia(currentUserId, media);
+  };
+
   const sendMessage = useCallback(
-    async (slug, text, imageFile) => {
+    async (slug, text, media) => {
       const profile = await resolveProfile(slug);
       if (!profile) return;
-      let mediaUrl = null;
-      if (imageFile) mediaUrl = await (await import("../lib/api/storage")).uploadMessageMedia(currentUserId, imageFile);
+      const mediaUrl = await resolveMediaUrl(media);
 
       const conversationId =
         conversations[slug]?.conversationId ?? (await messagesApi.findOrCreateDirectConversation(currentUserId, profile.id));
@@ -68,9 +75,8 @@ export function useMessages(currentUserId) {
   );
 
   const sendGroupMessage = useCallback(
-    async (groupId, text, imageFile) => {
-      let mediaUrl = null;
-      if (imageFile) mediaUrl = await (await import("../lib/api/storage")).uploadMessageMedia(currentUserId, imageFile);
+    async (groupId, text, media) => {
+      const mediaUrl = await resolveMediaUrl(media);
       await messagesApi.sendMessage(groupId, currentUserId, { text, mediaUrl });
       await reload();
     },
@@ -125,7 +131,7 @@ export function useMessages(currentUserId) {
     useEffect(() => {
       if (!conversationId || !currentUserId) return undefined;
       const { sendTyping, stop } = messagesApi.joinTypingChannel(conversationId, currentUserId, (typingUserId) => {
-        setTypingIndicator({ key: conversationId, name: slugForId(typingUserId) ?? "Someone" });
+        setTypingIndicator({ key: conversationId, name: nameForId(typingUserId) });
         clearTimeout(typingTimeoutRef.current);
         typingTimeoutRef.current = setTimeout(() => setTypingIndicator(null), 3000);
       });
