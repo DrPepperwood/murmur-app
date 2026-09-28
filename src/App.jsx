@@ -1324,7 +1324,7 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
       let avatarUrl = form.photo;
       if (form.photoFile) avatarUrl = await uploadAvatar(currentUserId, form.photoFile);
 
-      await profilesApi.updateProfile(currentUserId, {
+      const updated = await profilesApi.updateProfile(currentUserId, {
         name: form.name.trim() || "You",
         handle: sanitizedHandle,
         bio: form.bio.trim(),
@@ -1332,14 +1332,18 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
         website: form.website.trim(),
         avatar_url: avatarUrl,
       });
-      await refreshProfile("you"); // pull the saved row back into the cache
+      // Cache the exact row Supabase just confirmed was saved, directly —
+      // more reliable than a second round-trip fetch (refreshProfile
+      // swallows its own errors), which could silently no-op and leave the
+      // old avatar showing even though the save actually went through.
+      cacheProfile(updated);
       updateProfile("you", {
-        name: form.name.trim() || "You",
-        handle: sanitizedHandle,
-        bio: form.bio.trim(),
-        location: form.location.trim(),
-        website: form.website.trim(),
-        photo: avatarUrl,
+        name: updated.name,
+        handle: updated.handle,
+        bio: updated.bio,
+        location: updated.location,
+        website: updated.website,
+        photo: updated.avatar_url,
       });
       setEditing(false);
     } catch (err) {
@@ -1477,16 +1481,6 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
       <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, padding: "18px 22px 22px", marginBottom: 18 }}>
         {editing ? (
           <div>
-            <label style={fieldLabel}>PHOTO</label>
-            <div style={{ marginBottom: 14 }}>
-              <PhotoPicker
-                image={form.photo}
-                setImage={(img) => setForm((f) => ({ ...f, photo: img }))}
-                onFile={(file) => setForm((f) => ({ ...f, photoFile: file }))}
-                showGifOption={false}
-                size="small"
-              />
-            </div>
             <label style={fieldLabel}>NAME</label>
             <input style={{ ...inputStyle, marginBottom: 12 }} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
             <label style={fieldLabel}>HANDLE</label>
