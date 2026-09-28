@@ -310,8 +310,9 @@ function MediaContent({ src, alt, style }) {
   return <img src={src} alt={alt} style={style} />;
 }
 
-function PhotoPicker({ image, setImage, size = "normal", onFile }) {
+function PhotoPicker({ image, setImage, size = "normal", onFile, showGifOption = true }) {
   const inputRef = useRef(null);
+  const [showGifPicker, setShowGifPicker] = useState(false);
   return (
     <div>
       <input
@@ -349,15 +350,42 @@ function PhotoPicker({ image, setImage, size = "normal", onFile }) {
           </button>
         </div>
       ) : (
-        <button
-          onClick={() => inputRef.current && inputRef.current.click()}
-          style={{
-            display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer",
-            padding: 0, marginTop: 6, color: PALETTE.teal, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13,
-          }}
-        >
-          <ImagePlus size={16} /> Add photo, GIF, or video
-        </button>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 6 }}>
+            <button
+              onClick={() => inputRef.current && inputRef.current.click()}
+              style={{
+                display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer",
+                padding: 0, color: PALETTE.teal, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13,
+              }}
+            >
+              <ImagePlus size={16} /> Add photo or video
+            </button>
+            {showGifOption && (
+              <button
+                onClick={() => setShowGifPicker((v) => !v)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer",
+                  padding: 0, color: showGifPicker ? PALETTE.teal : PALETTE.inkSoft, fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600,
+                }}
+              >
+                GIF
+              </button>
+            )}
+          </div>
+          {showGifPicker && (
+            <div style={{ marginTop: 8 }}>
+              <GifPicker
+                onPick={(url) => {
+                  setImage(url);
+                  onFile?.(url);
+                  setShowGifPicker(false);
+                }}
+                onClose={() => setShowGifPicker(false)}
+              />
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1491,6 +1519,7 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
                 image={form.photo}
                 setImage={(img) => setForm((f) => ({ ...f, photo: img }))}
                 onFile={(file) => setForm((f) => ({ ...f, photoFile: file }))}
+                showGifOption={false}
                 size="small"
               />
             </div>
@@ -3641,7 +3670,7 @@ export default function Murmur() {
     const pollValid = draftPoll && draftPoll.options.filter((o) => o.trim()).length >= 2;
     if ((!text && !draftImage && !pollValid) || draft.length > MAX_POST_LENGTH) return;
     const pollOptions = pollValid ? draftPoll.options.filter((o) => o.trim()).map((o) => o.trim()) : null;
-    const isVideo = draftImageFile && draftImageFile.type.startsWith("video");
+    const isVideo = draftImageFile instanceof File && draftImageFile.type.startsWith("video");
     setDraft("");
     setDraftImage(null);
     setDraftImageFile(null);
