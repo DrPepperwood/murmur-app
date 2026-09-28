@@ -5,6 +5,7 @@ import { setCurrentUser, getCurrentUser, allCachedProfiles, subscribeToProfileCa
 import { useSocial } from "./hooks/useSocial";
 import { useMessages } from "./hooks/useMessages";
 import { usePosts, usePostDetail } from "./hooks/usePosts";
+import { useNotifications } from "./hooks/useNotifications";
 import * as postsApi from "./lib/api/posts";
 import * as profilesApi from "./lib/api/profiles";
 import * as giphyApi from "./lib/api/giphy";
@@ -164,43 +165,6 @@ function computeTrends(posts, limit = 5) {
       query: tag.slice(1),
     }));
 }
-
-const SEED_NOTIFICATIONS = [
-  { id: nextId(), type: "like", actor: "kestrel", postId: 3, text: "liked your reply", time: "2h", read: true },
-  { id: nextId(), type: "follow", actor: "theoprine", postId: null, text: null, time: "1d", read: true },
-  { id: nextId(), type: "reply", actor: "rubensato", postId: 3, text: "\u201cGood policy honestly, I lost mine to the supply closet too.\u201d", time: "2d", read: true },
-];
-
-const SEED_CONVERSATIONS = {
-  odalysm: {
-    unread: 1,
-    messages: [
-      { id: nextId(), sender: "odalysm", text: "hey, did you end up going back to the reservoir this week?", time: "2d" },
-      { id: nextId(), sender: "you", text: "not yet, this weekend hopefully", time: "2d" },
-      { id: nextId(), sender: "odalysm", text: "let me know, I'll bring the good binoculars", time: "1d" },
-    ],
-  },
-  kestrel: {
-    unread: 0,
-    messages: [
-      { id: nextId(), sender: "you", text: "ok so who actually took the stapler", time: "3d" },
-      { id: nextId(), sender: "kestrel", text: "under investigation. trust no one", time: "3d" },
-    ],
-  },
-};
-
-const DM_REPLIES = [
-  "ha, fair point",
-  "wait really?",
-  "same honestly",
-  "okay noted",
-  "that tracks",
-  "I was just thinking about that",
-  "no notes, love this for you",
-  "hah okay deal",
-  "sending you good vibes for that",
-  "we should talk about this in person",
-];
 
 const EXTRA_TEXTS = [
   "Rearranged my desk for the third time this month. This is not procrastination, this is optimization research.",
@@ -3618,20 +3582,15 @@ export default function Murmur() {
   } = useSocial(user?.id);
   const [feedTab, setFeedTab] = useState("foryou");
   const [searchQuery, setSearchQuery] = useState("");
-  const [notifications, setNotifications] = useState(SEED_NOTIFICATIONS);
 
   const [notificationPrefs, setNotificationPrefs] = useState({ like: true, repost: true, reply: true, follow: true });
-  const notificationPrefsRef = useRef(notificationPrefs);
-  useEffect(() => {
-    notificationPrefsRef.current = notificationPrefs;
-  }, [notificationPrefs]);
   const toggleNotificationPref = (type) => setNotificationPrefs((prev) => ({ ...prev, [type]: !prev[type] }));
 
-  const addNotification = (n) => {
-    if (!notificationPrefsRef.current[n.type]) return;
-    setNotifications((prev) => [{ id: nextId(), read: false, ...n }, ...prev]);
-  };
-  const markAllRead = () => setNotifications((prev) => prev.map((n) => (n.read ? n : { ...n, read: true })));
+  // --- Real notifications (Supabase), replacing the old seeded mock state
+  // and its setTimeout-simulated arrivals. See MIGRATION.md step 5. Rows are
+  // created server-side (by DB triggers on likes/reposts/replies/follows),
+  // and new ones stream in live via a Realtime subscription inside the hook.
+  const { notifications, markAllRead } = useNotifications(user?.id, notificationPrefs);
 
   const hiddenAuthors = new Set([...blocked, ...muted]);
 
