@@ -61,6 +61,20 @@ export async function fetchProfilePosts(authorId) {
   return data;
 }
 
+/** Top-level posts from a specific set of authors, newest first — for a List's member feed. */
+export async function fetchPostsByAuthors(authorIds) {
+  if (!authorIds || authorIds.length === 0) return [];
+  const { data, error } = await supabase
+    .from("posts_feed")
+    .select("*")
+    .in("author_id", authorIds)
+    .is("reply_to_id", null)
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return data;
+}
+
 /** A single post plus its poll (if any). Replies are fetched separately below. */
 export async function fetchPost(postId) {
   const { data: post, error } = await supabase
