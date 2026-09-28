@@ -24,7 +24,7 @@ function timeAgo(iso) {
 }
 
 /** Turn one posts_feed row into the shape murmur.jsx already expects. */
-function toAppPost(row) {
+export function toAppPost(row) {
   cacheProfile({
     id: row.author_id,
     handle: row.author_handle,
@@ -250,4 +250,137 @@ export function usePostDetail(postId) {
   );
 
   return { post, loading, reload, addReply };
+}
+
+/**
+ * Optimistic like/repost/bookmark/pin/edit/delete actions bound to an
+ * arbitrary, caller-managed list of posts — the same logic as usePosts()'s
+ * handlers above, but usable on ANY post list, not just the main feed's.
+ * usePosts()'s own toggleLike/toggleRepost/etc. look the target post up in
+ * its own `posts` state, so calling them on a post that isn't currently
+ * loaded into the main feed (e.g. an older post on someone's profile that
+ * scrolled out of the feed's loaded page) silently does nothing. Pages that
+ * load their own slice of posts directly from the backend (profile,
+ * bookmarks, search, lists — see usePostList below) use this instead.
+ */
+export function usePostActions(posts, setPosts, currentUserId, { removeOnUnbookmark = false } = {}) {
+  const toggleLike = useCallback(
+    async (postId) => {
+      const target = posts.find((p) => p.id === postId);
+      if (!target) return;
+      const wasLiked = target.liked;
+      setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, liked: !wasLiked, likes: p.likes + (wasLiked ? -1 : 1) } : p)));
+      try {
+        await postsApi.toggleLike(postId, currentUserId, wasLiked);
+      } catch (err) {
+        setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, liked: wasLiked, likes: p.likes + (wasLiked ? 1 : -1) } : p)));
+        throw err;
+      }
+    },
+    [posts, setPosts, currentUserId]
+  );
+
+  const toggleRepost = useCallback(
+    async (postId) => {
+      const target = posts.find((p) => p.id === postId);
+      if (!target) return;
+      const wasReposted = target.reposted;
+      setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, reposted: !wasReposted, reposts: p.reposts + (wasReposted ? -1 : 1) } : p)));
+      try {
+        await postsApi.toggleRepost(postId, currentUserId, wasReposted);
+      } catch (err) {
+        setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, reposted: wasReposted, reposts: p.reposts + (wasReposted ? 1 : -1) } : p)));
+        throw err;
+      }
+    },
+    [posts, setPosts, currentUserId]
+  );
+
+  // `removeOnUnbookmark` drops the post from the local list the moment it's
+  // un-bookmarked, instead of leaving it in place with the icon toggled off
+  // — what you want for an actual "Bookmarks" page (Twitter does the same),
+  // but not for e.g. a profile page, which should keep showing the post.
+  const toggleBookmark = useCallback(
+    async (postId) => {
+      const target = posts.find((p) => p.id === postId);
+      if (!target) return;
+      const was = target.bookmarked;
+      if (removeOnUnbookmark && was) {
+        setPosts((prev) => prev.filter((p) => p.id !== postId));
+        try {
+          await postsApi.toggleBookmark(postId, currentUserId, was);
+        } catch (err) {
+          setPosts((prev) => (prev.some((p) => p.id === postId) ? prev : [...prev, target]));
+          throw err;
+        }
+        return;
+      }
+      setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, bookmarked: !was } : p)));
+      try {
+        await postsApi.toggleBookmark(postId, currentUserId, was);
+      } catch (err) {
+        setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, bookmarked: was } : p)));
+        throw err;
+      }
+    },
+    [posts, setPosts, currentUserId, removeOnUnbookmark]
+  );
+
+  const togglePin = useCallback(
+    async (postId) => {
+      const target = posts.find((p) => p.id === postId);
+      const nowPinned = !target?.isPinned;
+      await postsApi.togglePin(postId, currentUserId, nowPinned);
+      setPosts((prev) => prev.map((p) => ({ ...p, isPinned: p.id === postId ? nowPinned : false })));
+    },
+    [posts, setPosts, currentUserId]
+  );
+
+  const editPost = useCallback(
+    async (postId, text) => {
+      await postsApi.editPost(postId, text);
+      setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, text, edited: true } : p)));
+    },
+    [setPosts]
+  );
+
+  const deletePost = useCallback(
+    async (postId) => {
+      await postsApi.deletePost(postId);
+      setPosts((prev) => prev.filter((p) => p.id !== postId));
+    },
+    [setPosts]
+  );
+
+  const votePoll = useCallback(async (postId, optionId) => postsApi.votePoll(postId, optionId, currentUserId), [currentUserId]);
+
+  return { toggleLike, toggleRepost, toggleBookmark, togglePin, editPost, deletePost, votePoll };
+}
+
+/**
+ * Fetches a page's own slice of posts straight from the backend — a
+ * person's own posts, your bookmarks, a list's members' posts — instead of
+ * filtering whatever happens to already be loaded into the main feed's
+ * `posts` array, which only has whatever page of the feed you've scrolled
+ * through. `loadFn` should be a memoized (useCallback'd) function so this
+ * doesn't refetch on every render; it reloads whenever `loadFn`'s identity
+ * changes (e.g. the profile handle you're viewing changes).
+ */
+export function usePostList(loadFn, currentUserId, options) {
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    const rows = await loadFn();
+    setPosts(rows.map(toAppPost));
+    setLoading(false);
+  }, [loadFn]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const actions = usePostActions(posts, setPosts, currentUserId, options);
+  return { posts, loading, reload, ...actions };
 }
