@@ -267,11 +267,22 @@ function isVideoUrl(url) {
   return url.startsWith("data:video") || /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url);
 }
 
+function isGifUrl(url) {
+  if (typeof url !== "string") return false;
+  return url.startsWith("data:image/gif") || /\.gif(\?|$)/i.test(url);
+}
+
 function MediaContent({ src, alt, style }) {
   if (isVideoUrl(src)) {
     return <video src={src} controls playsInline style={style} />;
   }
-  return <img src={src} alt={alt} style={style} />;
+  // Every call site sizes photos with objectFit: "cover" so they crop to
+  // fill a fixed box — right for a photo, but it zooms GIFs in awkwardly
+  // and often crops off the actual joke/action. GIFs show uncropped
+  // ("contain") instead, letterboxed on a soft background if their aspect
+  // ratio doesn't match the box, same as Twitter/Slack/etc. handle them.
+  const gifStyle = isGifUrl(src) ? { ...style, objectFit: "contain", background: PALETTE.tealSoft } : style;
+  return <img src={src} alt={alt} style={gifStyle} />;
 }
 
 // On-screen crop viewport size (px) and the resolution the final avatar is
