@@ -2,10 +2,14 @@
 //
 // Uses Giphy's public "beta" API key by default, which works out of the
 // box with no signup, but is rate-limited and meant for testing only — get
-// your own free key at https://developers.giphy.com and set
-// VITE_GIPHY_API_KEY in .env.local before shipping this for real use.
-
-const API_KEY = import.meta.env.VITE_GIPHY_API_KEY || "dc6zaTOxFJmzC";
+// your own free key at https://developers.giphy.com and set it as an env
+// var before shipping this for real use. Two names are accepted:
+// GIPHY_API_KEY (no prefix — use this on Vercel, which blocks saving a var
+// named VITE_GIPHY_API_KEY because it flags the VITE_ prefix as "public")
+// or VITE_GIPHY_API_KEY (for local dev in .env.local, where that warning
+// doesn't apply). vite.config.js's envPrefix is what makes the unprefixed
+// name still reach the browser.
+const API_KEY = import.meta.env.GIPHY_API_KEY || import.meta.env.VITE_GIPHY_API_KEY || "dc6zaTOxFJmzC";
 const BASE = "https://api.giphy.com/v1/gifs";
 
 function toResult(g) {
