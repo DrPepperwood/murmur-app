@@ -276,12 +276,25 @@ function MediaContent({ src, alt, style }) {
   if (isVideoUrl(src)) {
     return <video src={src} controls playsInline style={style} />;
   }
-  // Every call site sizes photos with objectFit: "cover" so they crop to
-  // fill a fixed box — right for a photo, but it zooms GIFs in awkwardly
-  // and often crops off the actual joke/action. GIFs show uncropped
-  // ("contain") instead, letterboxed on a soft background if their aspect
-  // ratio doesn't match the box, same as Twitter/Slack/etc. handle them.
-  const gifStyle = isGifUrl(src) ? { ...style, objectFit: "contain", background: PALETTE.tealSoft } : style;
+  // Every call site sizes photos with a fixed box + objectFit: "cover" so
+  // they crop to fill it — right for a photo, but it zoomed GIFs in
+  // awkwardly and cropped off the actual motion. GIFs instead render at
+  // their own natural size (width/height "auto"), just capped to a modest
+  // max height so a tall or wide GIF doesn't dominate the post — no forced
+  // full-card-width stretch, no cropping, same as Twitter/Slack/etc. show
+  // them. `Math.min` still respects a call site's own smaller cap (e.g. the
+  // 100px compose preview) rather than growing it.
+  const gifStyle = isGifUrl(src)
+    ? {
+        ...style,
+        width: "auto",
+        maxWidth: "100%",
+        height: "auto",
+        maxHeight: Math.min(typeof style?.maxHeight === "number" ? style.maxHeight : 200, 200),
+        objectFit: "contain",
+        background: PALETTE.tealSoft,
+      }
+    : style;
   return <img src={src} alt={alt} style={gifStyle} />;
 }
 
