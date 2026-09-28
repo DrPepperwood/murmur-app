@@ -60,6 +60,12 @@ export function slugForId(id) {
   return row ? slugOf(row.handle) : null;
 }
 
+/** Display name for a cached UUID (falls back to a generic label if not cached yet). */
+export function nameForId(id) {
+  if (id === currentUserId) return "You";
+  return byId.get(id)?.name ?? "Someone";
+}
+
 /** Resolve a profile by UUID or slug ("you" resolves to the signed-in user), fetching (and caching) if not already known. */
 export async function resolveProfile(idOrSlug) {
   const targetId = idOrSlug === "you" ? currentUserId : idOrSlug;
