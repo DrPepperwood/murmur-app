@@ -274,6 +274,162 @@ function MediaContent({ src, alt, style }) {
   return <img src={src} alt={alt} style={style} />;
 }
 
+// On-screen crop viewport size (px) and the resolution the final avatar is
+// exported at. Everything the user sees and drags happens in VIEW-space;
+// handleConfirm scales those same numbers up to OUTPUT-space when drawing
+// to the export canvas, so what you see in the circle is what you get.
+const AVATAR_CROP_VIEW = 260;
+const AVATAR_CROP_OUTPUT = 480;
+
+/** Modal: lets the user pinch/drag-to-reposition and zoom a picked photo inside a circular guide before it becomes their avatar. */
+function AvatarCropper({ file, onCancel, onConfirm }) {
+  const imgRef = useRef(null);
+  const dragRef = useRef(null);
+  const [imgUrl, setImgUrl] = useState(null);
+  const [natural, setNatural] = useState({ w: 0, h: 0 });
+  const [scale, setScale] = useState(1);
+  const [minScale, setMinScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setImgUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  const clampOffset = (nx, ny, s, dims = natural) => {
+    const w = dims.w * s, h = dims.h * s;
+    const maxX = Math.max(0, (w - AVATAR_CROP_VIEW) / 2);
+    const maxY = Math.max(0, (h - AVATAR_CROP_VIEW) / 2);
+    return { x: Math.min(maxX, Math.max(-maxX, nx)), y: Math.min(maxY, Math.max(-maxY, ny)) };
+  };
+
+  const onImgLoad = (e) => {
+    const dims = { w: e.target.naturalWidth, h: e.target.naturalHeight };
+    setNatural(dims);
+    // The smallest zoom that still fully covers the circular guide (no gaps).
+    const cover = Math.max(AVATAR_CROP_VIEW / dims.w, AVATAR_CROP_VIEW / dims.h);
+    setMinScale(cover);
+    setScale(cover);
+    setOffset({ x: 0, y: 0 });
+  };
+
+  const onPointerDown = (e) => {
+    dragRef.current = { startX: e.clientX, startY: e.clientY, origin: offset };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onPointerMove = (e) => {
+    if (!dragRef.current) return;
+    const dx = e.clientX - dragRef.current.startX;
+    const dy = e.clientY - dragRef.current.startY;
+    setOffset(clampOffset(dragRef.current.origin.x + dx, dragRef.current.origin.y + dy, scale));
+  };
+  const onPointerUp = () => {
+    dragRef.current = null;
+  };
+
+  const onZoom = (e) => {
+    const s = Number(e.target.value);
+    setScale(s);
+    setOffset((prev) => clampOffset(prev.x, prev.y, s));
+  };
+
+  const handleConfirm = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = AVATAR_CROP_OUTPUT;
+    canvas.height = AVATAR_CROP_OUTPUT;
+    const ctx = canvas.getContext("2d");
+    const ratio = AVATAR_CROP_OUTPUT / AVATAR_CROP_VIEW;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(AVATAR_CROP_OUTPUT / 2, AVATAR_CROP_OUTPUT / 2, AVATAR_CROP_OUTPUT / 2, 0, Math.PI * 2);
+    ctx.clip();
+    const drawW = natural.w * scale * ratio;
+    const drawH = natural.h * scale * ratio;
+    const drawX = AVATAR_CROP_OUTPUT / 2 - drawW / 2 + offset.x * ratio;
+    const drawY = AVATAR_CROP_OUTPUT / 2 - drawH / 2 + offset.y * ratio;
+    ctx.drawImage(imgRef.current, drawX, drawY, drawW, drawH);
+    ctx.restore();
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const croppedFile = new File([blob], "avatar.png", { type: "image/png" });
+      onConfirm(croppedFile, canvas.toDataURL("image/png"));
+    }, "image/png");
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(15,20,17,0.72)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
+      <div style={{ background: PALETTE.card, borderRadius: 16, padding: 20, width: "min(92vw, 340px)", boxSizing: "border-box" }}>
+        <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 16, color: PALETTE.ink, marginBottom: 4, textAlign: "center" }}>
+          Reposition your photo
+        </div>
+        <div style={{ fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5, color: PALETTE.inkSoft, marginBottom: 14, textAlign: "center" }}>
+          Drag to move, use the slider to zoom
+        </div>
+        <div
+          style={{
+            width: AVATAR_CROP_VIEW, height: AVATAR_CROP_VIEW, margin: "0 auto", position: "relative",
+            borderRadius: 12, overflow: "hidden", background: "#111", touchAction: "none", cursor: "grab",
+          }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerLeave={onPointerUp}
+        >
+          {imgUrl && (
+            <img
+              ref={imgRef}
+              src={imgUrl}
+              alt=""
+              onLoad={onImgLoad}
+              draggable={false}
+              style={{
+                position: "absolute", left: "50%", top: "50%",
+                width: natural.w * scale, height: natural.h * scale,
+                transform: `translate(-50%, -50%) translate(${offset.x}px, ${offset.y}px)`,
+                userSelect: "none", pointerEvents: "none", maxWidth: "none",
+              }}
+            />
+          )}
+          {/* Darkens everything outside the circular guide (classic box-shadow-on-a-circle trick). */}
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute", inset: 0, borderRadius: "50%",
+              boxShadow: "0 0 0 2000px rgba(15,20,17,0.62)",
+              border: "2px solid rgba(255,255,255,0.85)",
+              pointerEvents: "none",
+            }}
+          />
+        </div>
+        <input
+          type="range"
+          min={minScale}
+          max={minScale * 3}
+          step={0.01}
+          value={scale}
+          onChange={onZoom}
+          style={{ width: "100%", marginTop: 16, accentColor: PALETTE.teal }}
+        />
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+          <button
+            onClick={onCancel}
+            style={{ background: "none", border: "none", cursor: "pointer", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13.5, padding: "8px 12px" }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            style={{ background: PALETTE.coral, color: "#FFF7F2", border: "none", borderRadius: 999, padding: "8px 18px", fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 500, fontSize: 13.5, cursor: "pointer" }}
+          >
+            Use photo
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PhotoPicker({ image, setImage, size = "normal", onFile, showGifOption = true }) {
   const inputRef = useRef(null);
   const [showGifPicker, setShowGifPicker] = useState(false);
@@ -1297,6 +1453,7 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [croppingFile, setCroppingFile] = useState(null);
   const watermarkDots = [
     [10, 14], [22, 8], [40, 20], [58, 10], [76, 22], [90, 12],
     [16, 40], [34, 46], [52, 38], [70, 44], [86, 40],
@@ -1392,6 +1549,17 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
     <div>
       <BackBar onBack={onBack} label="Back to feed" />
 
+      {croppingFile && (
+        <AvatarCropper
+          file={croppingFile}
+          onCancel={() => setCroppingFile(null)}
+          onConfirm={(croppedFile, previewDataUrl) => {
+            setForm((f) => ({ ...f, photo: previewDataUrl, photoFile: croppedFile }));
+            setCroppingFile(null);
+          }}
+        />
+      )}
+
       <div style={{ position: "relative", marginBottom: isMobile ? 36 : 44 }}>
         <div style={{ height: isMobile ? 108 : 140, borderRadius: 14, overflow: "hidden", background: PALETTE.tealSoft, position: "relative" }}>
           {coverImage ? (
@@ -1454,10 +1622,7 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
                 style={{ display: "none" }}
                 onChange={(e) => {
                   const file = e.target.files && e.target.files[0];
-                  if (file) {
-                    readFileAsDataUrl(file, (dataUrl) => setForm((f) => ({ ...f, photo: dataUrl })));
-                    setForm((f) => ({ ...f, photoFile: file }));
-                  }
+                  if (file) setCroppingFile(file);
                   e.target.value = "";
                 }}
               />
