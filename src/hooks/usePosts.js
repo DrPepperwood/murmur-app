@@ -87,6 +87,14 @@ function buildReplyTree(flatRows, rootId) {
   return attach(rootId);
 }
 
+// `media` is either a raw File (needs uploading to Storage) or a plain
+// string URL (a GIF picked from Giphy is already hosted — no upload needed).
+async function resolvePostMediaUrl(userId, media) {
+  if (!media) return null;
+  if (typeof media === "string") return media;
+  return (await import("../lib/api/storage")).uploadPostMedia(userId, media);
+}
+
 export function usePosts(currentUserId) {
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -121,10 +129,7 @@ export function usePosts(currentUserId) {
 
   const createPost = useCallback(
     async ({ text, imageFile, videoFile, pollOptions, quotedPostId }) => {
-      let imageUrl = null;
-      let videoUrl = null;
-      if (imageFile) imageUrl = await (await import("../lib/api/storage")).uploadPostMedia(currentUserId, imageFile);
-      if (videoFile) videoUrl = await (await import("../lib/api/storage")).uploadPostMedia(currentUserId, videoFile);
+      const [imageUrl, videoUrl] = await Promise.all([resolvePostMediaUrl(currentUserId, imageFile), resolvePostMediaUrl(currentUserId, videoFile)]);
 
       const post = await postsApi.createPost({ authorId: currentUserId, text, imageUrl, videoUrl, quotedPostId, pollOptions });
       await loadFeed(); // simplest correct approach; swap for a local prepend once you're comfortable with the shape
@@ -237,8 +242,7 @@ export function usePostDetail(postId) {
 
   const addReply = useCallback(
     async (authorId, parentId, text, imageFile) => {
-      let imageUrl = null;
-      if (imageFile) imageUrl = await (await import("../lib/api/storage")).uploadPostMedia(authorId, imageFile);
+      const imageUrl = await resolvePostMediaUrl(authorId, imageFile);
       await postsApi.createReply({ authorId, parentId, text, imageUrl });
       await reload();
     },
