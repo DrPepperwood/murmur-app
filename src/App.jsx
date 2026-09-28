@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useRef, useContext, createContext, useMemo } from "react";
 import { Heart, Repeat2, MessageCircle, Feather, Sparkles, ArrowLeft, Calendar, CornerDownRight, Loader2, ImagePlus, X, MapPin, Link2, Camera, Users, Search, Bell, UserPlus, Mail, Send, BadgeCheck, MoreHorizontal, Bookmark, Settings, VolumeX, ShieldOff, BarChart2, Check, Plus, Pin, List, Trash2, Eye, Flag, UserCircle, Video } from "lucide-react";
 import { useAuth } from "./hooks/useAuth";
-import { setCurrentUser } from "./hooks/profileCache";
+import { setCurrentUser, getCurrentUser, allCachedProfiles, subscribeToProfileCache, cacheProfile, refreshProfile } from "./hooks/profileCache";
+import { useSocial } from "./hooks/useSocial";
 import { usePosts, usePostDetail } from "./hooks/usePosts";
 import * as postsApi from "./lib/api/posts";
+import * as profilesApi from "./lib/api/profiles";
+import { uploadAvatar } from "./lib/api/storage";
 
 const THEMES = {
   light: {
@@ -1297,25 +1300,60 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
   const ready = useReadyDelay(handle);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const watermarkDots = [
     [10, 14], [22, 8], [40, 20], [58, 10], [76, 22], [90, 12],
     [16, 40], [34, 46], [52, 38], [70, 44], [86, 40],
   ];
 
+  // Post authorship only caches a thin profile row (no bio, no real
+  // follower/following counts). Fetch the real row whenever a profile page
+  // is opened so bio/location/website/verified/counts are accurate instead
+  // of stuck at 0/blank — see refreshProfile's comment in profileCache.js.
+  useEffect(() => {
+    refreshProfile(handle);
+  }, [handle]);
+
   const openEdit = () => {
-    setForm({ name: user.name, handle: user.handle, bio: user.bio, location: user.location, website: user.website, photo: user.photo || null });
+    setForm({ name: user.name, handle: user.handle, bio: user.bio, location: user.location, website: user.website, photo: user.photo || null, photoFile: null });
+    setSaveError("");
     setEditing(true);
   };
-  const saveEdit = () => {
-    updateProfile("you", {
-      name: form.name.trim() || "You",
-      handle: form.handle.trim().startsWith("@") ? form.handle.trim() : `@${form.handle.trim() || "you"}`,
-      bio: form.bio.trim(),
-      location: form.location.trim(),
-      website: form.website.trim(),
-      photo: form.photo,
-    });
-    setEditing(false);
+  const saveEdit = async () => {
+    const sanitizedHandle = "@" + (form.handle.trim().replace(/^@/, "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 30) || "you");
+    setSaving(true);
+    setSaveError("");
+    try {
+      const currentUserId = getCurrentUser();
+      let avatarUrl = form.photo;
+      if (form.photoFile) avatarUrl = await uploadAvatar(currentUserId, form.photoFile);
+
+      await profilesApi.updateProfile(currentUserId, {
+        name: form.name.trim() || "You",
+        handle: sanitizedHandle,
+        bio: form.bio.trim(),
+        location: form.location.trim(),
+        website: form.website.trim(),
+        avatar_url: avatarUrl,
+      });
+      await refreshProfile("you"); // pull the saved row back into the cache
+      updateProfile("you", {
+        name: form.name.trim() || "You",
+        handle: sanitizedHandle,
+        bio: form.bio.trim(),
+        location: form.location.trim(),
+        website: form.website.trim(),
+        photo: avatarUrl,
+      });
+      setEditing(false);
+    } catch (err) {
+      setSaveError(
+        err?.code === "23505" ? "That handle is already taken." : err?.message || "Couldn't save your profile — try again."
+      );
+    } finally {
+      setSaving(false);
+    }
   };
 
   const inputStyle = {
@@ -1417,7 +1455,12 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
           <div>
             <label style={fieldLabel}>PHOTO</label>
             <div style={{ marginBottom: 14 }}>
-              <PhotoPicker image={form.photo} setImage={(img) => setForm((f) => ({ ...f, photo: img }))} size="small" />
+              <PhotoPicker
+                image={form.photo}
+                setImage={(img) => setForm((f) => ({ ...f, photo: img }))}
+                onFile={(file) => setForm((f) => ({ ...f, photoFile: file }))}
+                size="small"
+              />
             </div>
             <label style={fieldLabel}>NAME</label>
             <input style={{ ...inputStyle, marginBottom: 12 }} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
@@ -1429,18 +1472,23 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
             <input style={{ ...inputStyle, marginBottom: 12 }} value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} placeholder="Optional" />
             <label style={fieldLabel}>WEBSITE</label>
             <input style={{ ...inputStyle, marginBottom: 16 }} value={form.website} onChange={(e) => setForm((f) => ({ ...f, website: e.target.value }))} placeholder="Optional" />
+            {saveError && (
+              <div style={{ color: PALETTE.coral, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5, marginBottom: 10 }}>{saveError}</div>
+            )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button
                 onClick={() => setEditing(false)}
-                style={{ background: "none", border: "none", cursor: "pointer", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13.5, padding: "8px 12px" }}
+                disabled={saving}
+                style={{ background: "none", border: "none", cursor: saving ? "default" : "pointer", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13.5, padding: "8px 12px" }}
               >
                 Cancel
               </button>
               <button
                 onClick={saveEdit}
-                style={{ background: PALETTE.coral, color: "#FFF7F2", border: "none", borderRadius: 999, padding: "8px 18px", fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 500, fontSize: 13.5, cursor: "pointer" }}
+                disabled={saving}
+                style={{ background: PALETTE.coral, color: "#FFF7F2", border: "none", borderRadius: 999, padding: "8px 18px", fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 500, fontSize: 13.5, cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1 }}
               >
-                Save
+                {saving ? "Saving…" : "Save"}
               </button>
             </div>
           </div>
@@ -1598,6 +1646,19 @@ function SearchPage({ query, setQuery, posts, onLike, onRepost, onOpenPost, onOp
   const { profiles } = useContext(ProfilesContext);
   const [resultTab, setResultTab] = useState("top");
   const q = query.trim().toLowerCase();
+
+  // People search used to only match whatever profiles were already cached
+  // (i.e. people you'd already seen a post from) — this searches every
+  // registered user by name/handle and caches whatever comes back, so
+  // `people` below (derived from the same cache) picks them up too.
+  useEffect(() => {
+    if (!q) return;
+    const t = setTimeout(() => {
+      profilesApi.searchProfiles(q).then((rows) => rows.forEach(cacheProfile)).catch(() => {});
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
   const people = q ? Object.entries(profiles).filter(([h, u]) => !blocked.has(h) && (u.name.toLowerCase().includes(q) || u.handle.toLowerCase().includes(q))) : [];
   const matchedPosts = q ? posts.filter((p) => p.text.toLowerCase().includes(q)) : [];
   const photoPosts = matchedPosts.filter((p) => p.image);
@@ -3323,7 +3384,19 @@ export default function Murmur() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  const [profiles, setProfiles] = useState(() => ({ ...NAMES }));
+  // `localProfiles` starts as the demo seed cast (still used by the mock
+  // DMs/notifications) plus a fallback "you" entry before any real data has
+  // loaded. `cachedProfiles` is real Supabase data, filled in as
+  // profileCache learns about real users (post authors, people you
+  // follow/block/list, or a profile page's refreshProfile call) via
+  // cacheProfile/resolveProfile. Real data must win once it exists —
+  // including for "you" itself, once your own row has been fetched —
+  // so cachedProfiles is spread LAST here; only handles cachedProfiles has
+  // never seen (the demo cast) keep showing the local placeholder.
+  const [localProfiles, setProfiles] = useState(() => ({ ...NAMES }));
+  const [cachedProfiles, setCachedProfiles] = useState(() => allCachedProfiles());
+  useEffect(() => subscribeToProfileCache(() => setCachedProfiles(allCachedProfiles())), []);
+  const profiles = useMemo(() => ({ ...localProfiles, ...cachedProfiles }), [cachedProfiles, localProfiles]);
   const updateProfile = (handle, updates) =>
     setProfiles((prev) => ({ ...prev, [handle]: { ...prev[handle], ...updates } }));
   const [draft, setDraft] = useState("");
@@ -3332,7 +3405,14 @@ export default function Murmur() {
   const [draftPoll, setDraftPoll] = useState(null);
   const [view, setView] = useState({ type: "feed" });
   const [coverImage, setCoverImage] = useState(null);
-  const [following, setFollowing] = useState(new Set(["odalysm", "kestrel"]));
+  // --- Real social graph (Supabase), replacing the old mock following/
+  // blocked/muted/lists state. See MIGRATION.md step 3.
+  const {
+    following, blocked, muted, lists,
+    toggleFollow, toggleBlock, toggleMute,
+    reportPost: submitPostReport, reportProfile: submitProfileReport,
+    createList, deleteList, addListMember, removeListMember,
+  } = useSocial(user?.id);
   const [feedTab, setFeedTab] = useState("foryou");
   const [searchQuery, setSearchQuery] = useState("");
   const [notifications, setNotifications] = useState(SEED_NOTIFICATIONS);
@@ -3353,40 +3433,7 @@ export default function Murmur() {
   };
   const markAllRead = () => setNotifications((prev) => prev.map((n) => (n.read ? n : { ...n, read: true })));
 
-  const [blocked, setBlocked] = useState(new Set());
-  const [muted, setMuted] = useState(new Set());
   const hiddenAuthors = new Set([...blocked, ...muted]);
-
-  const toggleBlock = (handle) =>
-    setBlocked((prev) => {
-      const next = new Set(prev);
-      if (next.has(handle)) {
-        next.delete(handle);
-      } else {
-        next.add(handle);
-        setFollowing((f) => {
-          if (!f.has(handle)) return f;
-          const nf = new Set(f);
-          nf.delete(handle);
-          return nf;
-        });
-        setMuted((m) => {
-          if (!m.has(handle)) return m;
-          const nm = new Set(m);
-          nm.delete(handle);
-          return nm;
-        });
-      }
-      return next;
-    });
-
-  const toggleMute = (handle) =>
-    setMuted((prev) => {
-      const next = new Set(prev);
-      if (next.has(handle)) next.delete(handle);
-      else next.add(handle);
-      return next;
-    });
 
   const visibleNotifications = notifications.filter((n) => !blocked.has(n.actor));
   const unreadCount = visibleNotifications.filter((n) => !n.read).length;
@@ -3475,21 +3522,6 @@ export default function Murmur() {
     Object.values(visibleConversations).reduce((s, c) => s + c.unread, 0) +
     Object.values(visibleGroupChats).reduce((s, g) => s + g.unread, 0);
 
-  const toggleFollow = (handle) =>
-    setFollowing((prev) => {
-      const next = new Set(prev);
-      const wasFollowing = next.has(handle);
-      if (wasFollowing) next.delete(handle);
-      else next.add(handle);
-      if (!wasFollowing) {
-        const t = setTimeout(() => {
-          addNotification({ type: "follow", actor: handle, postId: null, text: null, time: "now" });
-          setProfiles((p) => ({ ...p, you: { ...p.you, followers: p.you.followers + 1 } }));
-        }, 2600 + Math.random() * 2200);
-        timersRef.current.push(t);
-      }
-      return next;
-    });
   const voteOnPoll = votePoll;
 
   const postDraft = async () => {
@@ -3511,34 +3543,19 @@ export default function Murmur() {
     });
   };
 
+  // Local "have I reported this" tracking for the UI (isReported labels) —
+  // useSocial's submitPostReport/submitProfileReport write the real report
+  // row; these Sets just remember which ones this session already sent.
   const [reportedPosts, setReportedPosts] = useState(new Set());
   const [reportedProfiles, setReportedProfiles] = useState(new Set());
-  const reportPost = (id, reason) => setReportedPosts((prev) => new Set(prev).add(id));
-  const reportProfile = (handle, reason) => setReportedProfiles((prev) => new Set(prev).add(handle));
-
-  const [lists, setLists] = useState({});
-  const createList = (name) => {
-    const id = nextId();
-    setLists((prev) => ({ ...prev, [id]: { id, name, members: [] } }));
+  const reportPost = (id, reason) => {
+    setReportedPosts((prev) => new Set(prev).add(id));
+    submitPostReport(id, reason);
   };
-  const deleteList = (id) =>
-    setLists((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  const addListMember = (listId, handle) =>
-    setLists((prev) => {
-      const l = prev[listId];
-      if (!l || l.members.includes(handle)) return prev;
-      return { ...prev, [listId]: { ...l, members: [...l.members, handle] } };
-    });
-  const removeListMember = (listId, handle) =>
-    setLists((prev) => {
-      const l = prev[listId];
-      if (!l) return prev;
-      return { ...prev, [listId]: { ...l, members: l.members.filter((h) => h !== handle) } };
-    });
+  const reportProfile = (handle, reason) => {
+    setReportedProfiles((prev) => new Set(prev).add(handle));
+    submitProfileReport(handle, reason);
+  };
 
   const submitQuote = async (postId, text, imageFile) => {
     await createPost({ text, imageFile, videoFile: null, pollOptions: null, quotedPostId: postId });
