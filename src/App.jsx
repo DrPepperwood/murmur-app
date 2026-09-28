@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useContext, createContext, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useContext, createContext, useMemo } from "react";
 import { Heart, Repeat2, MessageCircle, Feather, Sparkles, ArrowLeft, Calendar, CornerDownRight, Loader2, ImagePlus, X, MapPin, Link2, Camera, Users, Search, Bell, UserPlus, Mail, Send, BadgeCheck, MoreHorizontal, Bookmark, Settings, VolumeX, ShieldOff, BarChart2, Check, Plus, Pin, List, Trash2, Eye, Flag, UserCircle, Video } from "lucide-react";
 import { useAuth } from "./hooks/useAuth";
-import { setCurrentUser, getCurrentUser, allCachedProfiles, subscribeToProfileCache, cacheProfile, refreshProfile } from "./hooks/profileCache";
+import { setCurrentUser, getCurrentUser, allCachedProfiles, subscribeToProfileCache, cacheProfile, refreshProfile, idForSlug } from "./hooks/profileCache";
 import { useSocial } from "./hooks/useSocial";
 import { useMessages } from "./hooks/useMessages";
-import { usePosts, usePostDetail } from "./hooks/usePosts";
+import { usePosts, usePostDetail, usePostList, usePostActions, toAppPost } from "./hooks/usePosts";
 import { useNotifications } from "./hooks/useNotifications";
 import * as postsApi from "./lib/api/posts";
 import * as profilesApi from "./lib/api/profiles";
@@ -1463,12 +1463,22 @@ function BackBar({ onBack, label }) {
   );
 }
 
-function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfile, onBack, coverImage, setCoverImage, isFollowing, onToggleFollow, followingCount, onMessage, onQuote, onEdit, onDelete, onBookmark, bookmarks, isBlocked, isMuted, onToggleBlock, onToggleMute, onOpenSettings, onSearch, onVote, pinnedPostId, onTogglePin, onReport, reportedPosts, onReportProfile, reportedProfiles, onViewAnalytics }) {
+function ProfilePage({ handle, onOpenPost, onOpenProfile, onBack, coverImage, setCoverImage, isFollowing, onToggleFollow, followingCount, onMessage, onQuote, isBlocked, isMuted, onToggleBlock, onToggleMute, onOpenSettings, onSearch, onVote, onReport, reportedPosts, onReportProfile, reportedProfiles, onViewAnalytics }) {
   const { profiles, updateProfile, isMobile } = useContext(ProfilesContext);
   const user = profiles[handle];
-  const authored = posts.filter((p) => p.author === handle);
-  const pinnedPost = authored.find((p) => p.id === pinnedPostId);
-  const restPosts = pinnedPost ? authored.filter((p) => p.id !== pinnedPostId) : authored;
+  // Fetches this person's actual posts straight from the backend, instead
+  // of filtering whatever happens to already be loaded into the main feed
+  // (the old approach — a post outside that loaded page just wouldn't show
+  // up here). See usePostList's comment in hooks/usePosts.js.
+  const authorId = idForSlug(handle);
+  const loadAuthored = useCallback(() => (authorId ? postsApi.fetchProfilePosts(authorId) : Promise.resolve([])), [authorId]);
+  const {
+    posts: authored, loading: postsLoading,
+    toggleLike: onLike, toggleRepost: onRepost, toggleBookmark: onBookmark, togglePin: onTogglePin,
+    editPost: onEdit, deletePost: onDelete,
+  } = usePostList(loadAuthored, getCurrentUser());
+  const pinnedPost = authored.find((p) => p.isPinned);
+  const restPosts = pinnedPost ? authored.filter((p) => p.id !== pinnedPost.id) : authored;
   const editable = handle === "you";
   const coverInputRef = useRef(null);
   const avatarInputRef = useRef(null);
@@ -1823,8 +1833,8 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
         )}
       </div>
 
-      <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden" }} aria-busy={!ready}>
-        {!ready ? (
+      <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden" }} aria-busy={!ready || postsLoading}>
+        {!ready || postsLoading ? (
           [0, 1, 2].map((i) => <SkeletonPost key={i} />)
         ) : authored.length === 0 ? (
           <div style={{ padding: 28, textAlign: "center", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 14 }}>
@@ -1835,13 +1845,13 @@ function ProfilePage({ handle, posts, onLike, onRepost, onOpenPost, onOpenProfil
             {pinnedPost && (
               <Post
                 key={pinnedPost.id} post={pinnedPost} onLike={onLike} onRepost={onRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile}
-                onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked={bookmarks.has(pinnedPost.id)}
+                onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked={pinnedPost.bookmarked}
                 onSearch={onSearch} onVote={onVote} isPinned onTogglePin={onTogglePin} showPinnedLabel
                 onReport={onReport} isReported={reportedPosts.has(pinnedPost.id)} onViewAnalytics={onViewAnalytics}
               />
             )}
             {restPosts.map((post) => (
-              <Post key={post.id} post={post} onLike={onLike} onRepost={onRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked={bookmarks.has(post.id)} onSearch={onSearch} onVote={onVote} isPinned={false} onTogglePin={onTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} onViewAnalytics={onViewAnalytics} />
+              <Post key={post.id} post={post} onLike={onLike} onRepost={onRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked={post.bookmarked} onSearch={onSearch} onVote={onVote} isPinned={false} onTogglePin={onTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} onViewAnalytics={onViewAnalytics} />
             ))}
           </>
         )}
@@ -1868,7 +1878,24 @@ function SearchPage({ query, setQuery, posts, onLike, onRepost, onOpenPost, onOp
   }, [q]);
 
   const people = q ? Object.entries(profiles).filter(([h, u]) => !blocked.has(h) && (u.name.toLowerCase().includes(q) || u.handle.toLowerCase().includes(q))) : [];
-  const matchedPosts = q ? posts.filter((p) => p.text.toLowerCase().includes(q)) : [];
+
+  // Murmur search now queries the backend directly (debounced, same as the
+  // people search above) instead of only matching whatever posts happened
+  // to already be loaded into the main feed — the old approach meant a
+  // post outside that loaded page just wouldn't turn up in search at all.
+  const [matchedPosts, setMatchedPosts] = useState([]);
+  useEffect(() => {
+    if (!q) { setMatchedPosts([]); return; }
+    const t = setTimeout(() => {
+      postsApi.searchPosts(q).then((rows) => setMatchedPosts(rows.map(toAppPost))).catch(() => setMatchedPosts([]));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q]);
+  const currentUserId = getCurrentUser();
+  const {
+    toggleLike: searchLike, toggleRepost: searchRepost, toggleBookmark: searchBookmark,
+    togglePin: searchTogglePin, editPost: searchEdit, deletePost: searchDelete,
+  } = usePostActions(matchedPosts, setMatchedPosts, currentUserId);
   const photoPosts = matchedPosts.filter((p) => p.image);
 
   const showPeople = q && (resultTab === "top" || resultTab === "people");
@@ -2046,7 +2073,7 @@ function SearchPage({ query, setQuery, posts, onLike, onRepost, onOpenPost, onOp
           ) : (
             <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden" }}>
               {matchedPosts.map((post) => (
-                <Post key={post.id} post={post} onLike={onLike} onRepost={onRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked={bookmarks.has(post.id)} onSearch={onSearch} onVote={onVote} isPinned={post.id === pinnedPostId} onTogglePin={onTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
+                <Post key={post.id} post={post} onLike={searchLike} onRepost={searchRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={searchEdit} onDelete={searchDelete} onBookmark={searchBookmark} bookmarked={post.bookmarked} onSearch={onSearch} onVote={onVote} isPinned={post.isPinned} onTogglePin={searchTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
               ))}
             </div>
           )}
@@ -2065,7 +2092,7 @@ function SearchPage({ query, setQuery, posts, onLike, onRepost, onOpenPost, onOp
           ) : (
             <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden" }}>
               {photoPosts.map((post) => (
-                <Post key={post.id} post={post} onLike={onLike} onRepost={onRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked={bookmarks.has(post.id)} onSearch={onSearch} onVote={onVote} isPinned={post.id === pinnedPostId} onTogglePin={onTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
+                <Post key={post.id} post={post} onLike={searchLike} onRepost={searchRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={searchEdit} onDelete={searchDelete} onBookmark={searchBookmark} bookmarked={post.bookmarked} onSearch={onSearch} onVote={onVote} isPinned={post.isPinned} onTogglePin={searchTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
               ))}
             </div>
           )}
@@ -2368,12 +2395,22 @@ function PostAnalyticsPage({ postId, posts, onBack }) {
   );
 }
 
-function BookmarksPage({ posts, bookmarks, onLike, onRepost, onOpenPost, onOpenProfile, onQuote, onEdit, onDelete, onBookmark, onBack, onSearch, onVote, pinnedPostId, onTogglePin, onReport, reportedPosts }) {
-  const list = posts.filter((p) => bookmarks.has(p.id));
+function BookmarksPage({ onOpenPost, onOpenProfile, onQuote, onBack, onSearch, onVote, onReport, reportedPosts }) {
+  // Fetches your actual bookmarked posts from the backend instead of
+  // filtering whatever's already loaded into the main feed (the old
+  // approach — a bookmark outside that loaded page just wouldn't show up
+  // here). removeOnUnbookmark: true drops a post from this list the moment
+  // you un-bookmark it, same as the real Twitter bookmarks page.
+  const currentUserId = getCurrentUser();
+  const loadBookmarks = useCallback(() => (currentUserId ? postsApi.fetchBookmarks(currentUserId) : Promise.resolve([])), [currentUserId]);
+  const {
+    posts: list, loading,
+    toggleLike: onLike, toggleRepost: onRepost, toggleBookmark: onBookmark, togglePin: onTogglePin, editPost: onEdit, deletePost: onDelete,
+  } = usePostList(loadBookmarks, currentUserId, { removeOnUnbookmark: true });
   return (
     <div>
       <BackBar onBack={onBack} label="Back to feed" />
-      {list.length === 0 ? (
+      {!loading && list.length === 0 ? (
         <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, padding: 32, textAlign: "center", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 14 }}>
           Nothing bookmarked yet. Tap the bookmark icon on any murmur to save it here.
         </div>
@@ -2382,7 +2419,7 @@ function BookmarksPage({ posts, bookmarks, onLike, onRepost, onOpenPost, onOpenP
           {list.map((post) => (
             <Post
               key={post.id} post={post} onLike={onLike} onRepost={onRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile}
-              onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked onSearch={onSearch} onVote={onVote} isPinned={post.id === pinnedPostId} onTogglePin={onTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)}
+              onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked onSearch={onSearch} onVote={onVote} isPinned={post.isPinned} onTogglePin={onTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)}
             />
           ))}
         </div>
@@ -2466,9 +2503,24 @@ function ListsPage({ lists, onOpenList, onCreateList, onBack }) {
   );
 }
 
-function ListDetailPage({ listId, lists, posts, onLike, onRepost, onOpenPost, onOpenProfile, onQuote, onEdit, onDelete, onBookmark, bookmarks, onSearch, onVote, pinnedPostId, onTogglePin, onAddMember, onRemoveMember, onDeleteList, onBack, blocked, onReport, reportedPosts }) {
+function ListDetailPage({ listId, lists, onOpenPost, onOpenProfile, onQuote, onSearch, onVote, onAddMember, onRemoveMember, onDeleteList, onBack, blocked, onReport, reportedPosts }) {
   const { profiles } = useContext(ProfilesContext);
   const list = lists[listId];
+
+  // Fetches the actual posts from everyone in this list, straight from the
+  // backend, instead of filtering whatever's already loaded into the main
+  // feed (the old approach — a member's post outside that loaded page just
+  // wouldn't show up here). Hooks can't be called after the `if (!list)`
+  // early return below, so this runs unconditionally with an empty member
+  // list until `list` exists.
+  const memberIds = (list?.members ?? []).map(idForSlug).filter(Boolean);
+  const memberIdsKey = memberIds.join(",");
+  const loadListPosts = useCallback(() => postsApi.fetchPostsByAuthors(memberIds), [memberIdsKey]);
+  const currentUserId = getCurrentUser();
+  const {
+    posts: listPosts, loading: listPostsLoading,
+    toggleLike: onLike, toggleRepost: onRepost, toggleBookmark: onBookmark, togglePin: onTogglePin, editPost: onEdit, deletePost: onDelete,
+  } = usePostList(loadListPosts, currentUserId);
 
   if (!list) {
     return (
@@ -2482,7 +2534,6 @@ function ListDetailPage({ listId, lists, posts, onLike, onRepost, onOpenPost, on
   }
 
   const candidates = Object.keys(profiles).filter((h) => h !== "you" && !list.members.includes(h) && !blocked.has(h));
-  const listPosts = posts.filter((p) => list.members.includes(p.author));
 
   return (
     <div>
@@ -2555,14 +2606,14 @@ function ListDetailPage({ listId, lists, posts, onLike, onRepost, onOpenPost, on
         <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, padding: 32, textAlign: "center", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 14 }}>
           Add people above to see their murmurs here.
         </div>
-      ) : listPosts.length === 0 ? (
+      ) : !listPostsLoading && listPosts.length === 0 ? (
         <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, padding: 32, textAlign: "center", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 14 }}>
           Nobody in this list has posted yet.
         </div>
       ) : (
         <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden" }}>
           {listPosts.map((post) => (
-            <Post key={post.id} post={post} onLike={onLike} onRepost={onRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked={bookmarks.has(post.id)} onSearch={onSearch} onVote={onVote} isPinned={post.id === pinnedPostId} onTogglePin={onTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
+            <Post key={post.id} post={post} onLike={onLike} onRepost={onRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={onEdit} onDelete={onDelete} onBookmark={onBookmark} bookmarked={post.bookmarked} onSearch={onSearch} onVote={onVote} isPinned={post.isPinned} onTogglePin={onTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
           ))}
         </div>
       )}
