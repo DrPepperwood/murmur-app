@@ -244,3 +244,17 @@ export async function searchPosts(query) {
   if (error) throw error;
   return data;
 }
+
+/** Text of recent posts/replies containing a "#", for computing site-wide trending hashtags. */
+export async function fetchRecentHashtagTexts({ days = 7, limit = 500 } = {}) {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("posts")
+    .select("text")
+    .ilike("text", "%#%")
+    .gte("created_at", since)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data;
+}
