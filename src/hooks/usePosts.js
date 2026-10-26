@@ -87,6 +87,27 @@ function buildReplyTree(flatRows, rootId) {
   return attach(rootId);
 }
 
+// Small recursive helpers for editing the nested reply tree in place —
+// used to make reply actions (like/repost/edit/delete) update instantly
+// instead of refetching the whole thread. Each returns a new tree (no
+// mutation), same as the flat-array .map()/.filter() patterns elsewhere.
+function findInReplyTree(nodes, targetId) {
+  for (const n of nodes) {
+    if (n.id === targetId) return n;
+    const found = findInReplyTree(n.replies, targetId);
+    if (found) return found;
+  }
+  return null;
+}
+
+function mapReplyTree(nodes, targetId, fn) {
+  return nodes.map((n) => (n.id === targetId ? fn(n) : { ...n, replies: mapReplyTree(n.replies, targetId, fn) }));
+}
+
+function removeFromReplyTree(nodes, targetId) {
+  return nodes.filter((n) => n.id !== targetId).map((n) => ({ ...n, replies: removeFromReplyTree(n.replies, targetId) }));
+}
+
 // `media` is either a raw File (needs uploading to Storage) or a plain
 // string URL (a GIF picked from Giphy is already hosted — no upload needed).
 async function resolvePostMediaUrl(userId, media) {
@@ -220,7 +241,7 @@ export function usePosts(currentUserId) {
  * Single post + its full reply tree, for the post-detail view. Not part of
  * usePosts' feed list — call this when navigating into a specific post.
  */
-export function usePostDetail(postId) {
+export function usePostDetail(postId, currentUserId) {
   const [post, setPost] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -249,7 +270,54 @@ export function usePostDetail(postId) {
     [reload]
   );
 
-  return { post, loading, reload, addReply };
+  // Optimistic reply actions — update this post's own reply tree in place
+  // instead of refetching the whole thread afterward (which used to make
+  // liking/reposting/editing/deleting a reply visibly slower than the same
+  // action on a top-level post). Mirrors usePostActions' rollback-on-error
+  // pattern, just walking a tree instead of mapping a flat array.
+  const toggleReplyLike = useCallback(
+    async (replyId) => {
+      const target = findInReplyTree(post?.replies ?? [], replyId);
+      if (!target) return;
+      const wasLiked = target.liked;
+      setPost((p) => (p ? { ...p, replies: mapReplyTree(p.replies, replyId, (n) => ({ ...n, liked: !wasLiked, likes: n.likes + (wasLiked ? -1 : 1) })) } : p));
+      try {
+        await postsApi.toggleLike(replyId, currentUserId, wasLiked);
+      } catch (err) {
+        setPost((p) => (p ? { ...p, replies: mapReplyTree(p.replies, replyId, (n) => ({ ...n, liked: wasLiked, likes: n.likes + (wasLiked ? 1 : -1) })) } : p));
+        throw err;
+      }
+    },
+    [post, currentUserId]
+  );
+
+  const toggleReplyRepost = useCallback(
+    async (replyId) => {
+      const target = findInReplyTree(post?.replies ?? [], replyId);
+      if (!target) return;
+      const wasReposted = target.reposted;
+      setPost((p) => (p ? { ...p, replies: mapReplyTree(p.replies, replyId, (n) => ({ ...n, reposted: !wasReposted, reposts: n.reposts + (wasReposted ? -1 : 1) })) } : p));
+      try {
+        await postsApi.toggleRepost(replyId, currentUserId, wasReposted);
+      } catch (err) {
+        setPost((p) => (p ? { ...p, replies: mapReplyTree(p.replies, replyId, (n) => ({ ...n, reposted: wasReposted, reposts: n.reposts + (wasReposted ? 1 : -1) })) } : p));
+        throw err;
+      }
+    },
+    [post, currentUserId]
+  );
+
+  const editReply = useCallback(async (replyId, text) => {
+    await postsApi.editPost(replyId, text);
+    setPost((p) => (p ? { ...p, replies: mapReplyTree(p.replies, replyId, (n) => ({ ...n, text, edited: true })) } : p));
+  }, []);
+
+  const deleteReply = useCallback(async (replyId) => {
+    await postsApi.deletePost(replyId);
+    setPost((p) => (p ? { ...p, replies: removeFromReplyTree(p.replies, replyId) } : p));
+  }, []);
+
+  return { post, loading, reload, addReply, toggleReplyLike, toggleReplyRepost, editReply, deleteReply };
 }
 
 /**
@@ -383,4 +451,30 @@ export function usePostList(loadFn, currentUserId, options) {
 
   const actions = usePostActions(posts, setPosts, currentUserId, options);
   return { posts, loading, reload, ...actions };
+}
+
+/**
+ * Recent posts that contain a hashtag, pulled straight from the backend
+ * (last 7 days, up to 500) and refreshed every 5 minutes, so trending
+ * hashtags reflect the whole site instead of just the feed page you've
+ * scrolled through. Returns [{ text }] rows — feed them to computeTrends().
+ */
+export function useTrendingSource(userId) {
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    if (!userId) return undefined;
+    let cancelled = false;
+    const load = () =>
+      postsApi
+        .fetchRecentHashtagTexts()
+        .then((r) => { if (!cancelled) setRows(r); })
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [userId]);
+  return rows;
 }
