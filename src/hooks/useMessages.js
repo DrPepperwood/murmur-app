@@ -95,7 +95,23 @@ export function useMessages(currentUserId) {
 
   const markRead = useCallback(
     async (conversationId) => {
-      await messagesApi.markConversationRead(conversationId, currentUserId);
+      // Clear the badge on screen right away (it used to stay lit until the
+      // next full reload), then record the read time in the database.
+      setConversations((prev) => {
+        const next = { ...prev };
+        Object.keys(next).forEach((k) => {
+          if (next[k].conversationId === conversationId && next[k].unread) next[k] = { ...next[k], unread: 0 };
+        });
+        return next;
+      });
+      setGroupChats((prev) =>
+        prev[conversationId]?.unread ? { ...prev, [conversationId]: { ...prev[conversationId], unread: 0 } } : prev
+      );
+      try {
+        await messagesApi.markConversationRead(conversationId, currentUserId);
+      } catch {
+        /* badge is already cleared locally; the next open will retry */
+      }
     },
     [currentUserId]
   );
