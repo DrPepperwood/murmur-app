@@ -2996,7 +2996,7 @@ function GroupChatPage({ groupId, groupChats, onSend, onOpenProfile, onBack, mar
 
   useEffect(() => {
     markRead(groupId);
-  }, [groupId]);
+  }, [groupId, group?.messages?.length]);
 
   useEffect(() => {
     bottomRef.current && bottomRef.current.scrollIntoView({ block: "nearest" });
@@ -3191,9 +3191,11 @@ function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack
   const isTyping = typingIndicator && typingIndicator.key === convo.conversationId;
   const sendTyping = useTypingChannel(convo.conversationId);
 
+  // Mark read on open, and again whenever a new message lands while this chat
+  // is already open (otherwise it would count as unread until you left and came back).
   useEffect(() => {
     markRead(handle);
-  }, [handle]);
+  }, [handle, convo.messages.length]);
 
   useEffect(() => {
     bottomRef.current && bottomRef.current.scrollIntoView({ block: "nearest" });
