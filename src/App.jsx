@@ -1859,6 +1859,42 @@ function ProfilePage({ handle, onOpenPost, onOpenProfile, onBack, coverImage, se
   );
 }
 
+// ---- Search ranking -------------------------------------------------------
+// Higher score = closer match. People: exact handle/name beats starts-with,
+// which beats a word starting with it, which beats "contains it somewhere".
+// Ties go to people you follow, then verified, then bigger accounts.
+function scorePerson(u, q, isFollowed) {
+  const name = (u.name || "").toLowerCase();
+  const handle = (u.handle || "").toLowerCase().replace(/^@/, "");
+  let s = 0;
+  if (handle === q || name === q) s = 100;
+  else if (handle.startsWith(q)) s = 80;
+  else if (name.startsWith(q)) s = 75;
+  else if (name.split(/\s+/).some((w) => w.startsWith(q))) s = 60;
+  else if (handle.includes(q)) s = 40;
+  else if (name.includes(q)) s = 35;
+  else return 0;
+  if (isFollowed) s += 8;
+  if (u.verified) s += 4;
+  s += Math.min(3, Math.log10((u.followers || 0) + 1));
+  return s;
+}
+
+// Murmurs: whole-word matches beat partial ones, then lean on engagement and
+// a gentle recency boost so a popular recent post rises above an old echo.
+function scorePost(p, q) {
+  const text = (p.text || "").toLowerCase();
+  if (!text.includes(q)) return 0;
+  let s = 10;
+  const esc = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp(`(^|\\W)${esc}(\\W|$)`).test(text)) s += 20;
+  if (text.startsWith(q)) s += 5;
+  s += Math.min(15, Math.log2((p.likes || 0) + (p.reposts || 0) * 2 + 1) * 3);
+  const ageDays = p.createdAt ? (Date.now() - new Date(p.createdAt).getTime()) / 86400000 : 30;
+  s += Math.max(0, 8 - ageDays / 4);
+  return s;
+}
+
 function SearchPage({ query, setQuery, posts, trends: trendsProp, onLike, onRepost, onOpenPost, onOpenProfile, following, onToggleFollow, onBack, onQuote, onEdit, onDelete, onBookmark, bookmarks, blocked, onSearch, onVote, pinnedPostId, onTogglePin, onReport, reportedPosts }) {
   const { profiles } = useContext(ProfilesContext);
   const [resultTab, setResultTab] = useState("top");
@@ -1876,7 +1912,14 @@ function SearchPage({ query, setQuery, posts, trends: trendsProp, onLike, onRepo
     return () => clearTimeout(t);
   }, [q]);
 
-  const people = q ? Object.entries(profiles).filter(([h, u]) => !blocked.has(h) && (u.name.toLowerCase().includes(q) || u.handle.toLowerCase().includes(q))) : [];
+  const people = q
+    ? Object.entries(profiles)
+        .filter(([h]) => !blocked.has(h))
+        .map(([h, u]) => [h, u, scorePerson(u, q, following.has(h))])
+        .filter(([, , sc]) => sc > 0)
+        .sort((a, b) => b[2] - a[2])
+        .map(([h, u]) => [h, u])
+    : [];
 
   // Murmur search now queries the backend directly (debounced, same as the
   // people search above) instead of only matching whatever posts happened
@@ -1886,7 +1929,7 @@ function SearchPage({ query, setQuery, posts, trends: trendsProp, onLike, onRepo
   useEffect(() => {
     if (!q) { setMatchedPosts([]); return; }
     const t = setTimeout(() => {
-      postsApi.searchPosts(q).then((rows) => toAppPostsWithPolls(rows)).then((mapped) => setMatchedPosts(mapped)).catch(() => setMatchedPosts([]));
+      postsApi.searchPosts(q).then((rows) => toAppPostsWithPolls(rows)).then((mapped) => setMatchedPosts(mapped.map((p) => [p, scorePost(p, q)]).sort((a, b) => b[1] - a[1]).map(([p]) => p))).catch(() => setMatchedPosts([]));
     }, 300);
     return () => clearTimeout(t);
   }, [q]);
