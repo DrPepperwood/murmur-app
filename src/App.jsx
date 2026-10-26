@@ -3449,7 +3449,7 @@ function PostPage({ postId, currentUserId, onLike, onRepost, onOpenProfile, onBa
   );
 }
 
-function Feed({ posts, onLike, onRepost, onOpenPost, onOpenProfile, draft, setDraft, draftImage, setDraftImage, setDraftImageFile, postDraft, onLoadMore, loadingMore, reachedEnd, feedTab, setFeedTab, following, onQuote, onEdit, onDelete, onBookmark, bookmarks, onSearch, onVote, draftPoll, setDraftPoll, pinnedPostId, onTogglePin, onReport, reportedPosts }) {
+function Feed({ posts, onLike, onRepost, onOpenPost, onOpenProfile, draft, setDraft, draftImage, setDraftImage, setDraftImageFile, postDraft, onLoadMore, loadingMore, reachedEnd, feedTab, setFeedTab, following, onQuote, onEdit, onDelete, onBookmark, bookmarks, onSearch, onVote, draftPoll, setDraftPoll, postError, pinnedPostId, onTogglePin, onReport, reportedPosts }) {
   const { profiles } = useContext(ProfilesContext);
   const sentinelRef = useRef(null);
   const [selectedIndex, setSelectedIndex] = useState(-1);
@@ -3469,7 +3469,11 @@ function Feed({ posts, onLike, onRepost, onOpenPost, onOpenProfile, draft, setDr
 
   const displayedPosts = feedTab === "following" ? posts.filter((p) => p.author === "you" || following.has(p.author)) : posts;
   const pollValid = draftPoll && draftPoll.options.filter((o) => o.trim()).length >= 2;
-  const canPost = draft.length <= MAX_POST_LENGTH && (draft.trim() || draftImage || pollValid);
+  // A poll needs its question typed in the box (the database requires every
+  // post to have text or media, so a poll with no question can't be saved),
+  // and a started poll needs at least two filled-in options.
+  const needsQuestion = !!draftPoll && !draft.trim() && !draftImage;
+  const canPost = draft.length <= MAX_POST_LENGTH && (draft.trim() || draftImage) && (!draftPoll || pollValid);
   const ready = useReadyDelay(feedTab);
 
   useEffect(() => {
@@ -3541,6 +3545,11 @@ function Feed({ posts, onLike, onRepost, onOpenPost, onOpenProfile, draft, setDr
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 14, marginTop: 6 }}>
+          {postError ? (
+            <span role="alert" style={{ marginRight: "auto", color: PALETTE.coral, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5 }}>{postError}</span>
+          ) : needsQuestion ? (
+            <span style={{ marginRight: "auto", color: PALETTE.inkSoft, fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5 }}>Type your poll question above first.</span>
+          ) : null}
           <CharCounter length={draft.length} max={MAX_POST_LENGTH} />
           <button
             onClick={postDraft}
@@ -3844,23 +3853,31 @@ export default function Murmur() {
 
   const voteOnPoll = votePoll;
 
+  const [postError, setPostError] = useState("");
   const postDraft = async () => {
     const text = draft.trim();
     const pollValid = draftPoll && draftPoll.options.filter((o) => o.trim()).length >= 2;
-    if ((!text && !draftImage && !pollValid) || draft.length > MAX_POST_LENGTH) return;
+    if ((!text && !draftImage) || (draftPoll && !pollValid) || draft.length > MAX_POST_LENGTH) return;
     const pollOptions = pollValid ? draftPoll.options.filter((o) => o.trim()).map((o) => o.trim()) : null;
     const isVideo = draftImageFile instanceof File && draftImageFile.type.startsWith("video");
-    setDraft("");
-    setDraftImage(null);
-    setDraftImageFile(null);
-    setDraftPoll(null);
-    await createPost({
-      text,
-      imageFile: isVideo ? null : draftImageFile,
-      videoFile: isVideo ? draftImageFile : null,
-      pollOptions,
-      quotedPostId: null,
-    });
+    setPostError("");
+    try {
+      await createPost({
+        text,
+        imageFile: isVideo ? null : draftImageFile,
+        videoFile: isVideo ? draftImageFile : null,
+        pollOptions,
+        quotedPostId: null,
+      });
+      // Only clear the composer once the post actually saved, so a failure
+      // doesn't eat what you typed.
+      setDraft("");
+      setDraftImage(null);
+      setDraftImageFile(null);
+      setDraftPoll(null);
+    } catch (err) {
+      setPostError(err?.message ? `Couldn't post: ${err.message}` : "Couldn't post — try again.");
+    }
   };
 
   // Local "have I reported this" tracking for the UI (isReported labels) —
@@ -4091,6 +4108,7 @@ export default function Murmur() {
                 onSearch={goSearch}
                 onVote={voteOnPoll}
                 draftPoll={draftPoll}
+                postError={postError}
                 setDraftPoll={setDraftPoll}
                 pinnedPostId={pinnedPostId}
                 onTogglePin={togglePin}
