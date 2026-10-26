@@ -258,3 +258,26 @@ export async function fetchRecentHashtagTexts({ days = 7, limit = 500 } = {}) {
   if (error) throw error;
   return data;
 }
+
+/**
+ * Poll options (with who voted for each) for a batch of posts in ONE query,
+ * so feed-style lists can show poll results inline without a request per
+ * post. Returns a Map of post_id -> options sorted by position; posts with
+ * no poll simply have no entry.
+ */
+export async function fetchPollOptionsForPosts(postIds) {
+  const byPost = new Map();
+  if (!postIds || postIds.length === 0) return byPost;
+  const { data, error } = await supabase
+    .from("poll_options")
+    .select("*, poll_votes(user_id)")
+    .in("post_id", postIds)
+    .order("position");
+  if (error) throw error;
+  (data ?? []).forEach((o) => {
+    const list = byPost.get(o.post_id) ?? [];
+    list.push(o);
+    byPost.set(o.post_id, list);
+  });
+  return byPost;
+}
