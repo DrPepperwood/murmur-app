@@ -116,6 +116,29 @@ async function resolvePostMediaUrl(userId, media) {
   return (await import("../lib/api/storage")).uploadPostMedia(userId, media);
 }
 
+/**
+ * posts_feed rows -> app posts, WITH their polls attached. Feed rows don't
+ * carry poll data (it lives in separate tables), so this fetches the poll
+ * options for the whole batch in one extra query and slots them in — which
+ * is what lets poll results show inline in the feed. If that extra query
+ * fails, posts still load, just without their polls.
+ */
+export async function toAppPostsWithPolls(rows) {
+  let polls = new Map();
+  try {
+    polls = await postsApi.fetchPollOptionsForPosts(rows.map((r) => r.id));
+  } catch {
+    // posts still render without their polls
+  }
+  return rows.map((r) => toAppPost({ ...r, pollOptions: polls.get(r.id) ?? r.pollOptions }));
+}
+
+/** Record the current user's vote on a poll locally (one vote per poll). */
+function applyVote(poll, optionId) {
+  if (!poll || poll.votedOption !== null) return poll;
+  return { ...poll, votedOption: optionId, options: poll.options.map((o) => (o.id === optionId ? { ...o, votes: o.votes + 1 } : o)) };
+}
+
 export function usePosts(currentUserId) {
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -127,7 +150,7 @@ export function usePosts(currentUserId) {
     const rows = following
       ? await postsApi.fetchFollowingFeed(currentUserId)
       : await postsApi.fetchFeed();
-    setPosts(rows.map(toAppPost));
+    setPosts(await toAppPostsWithPolls(rows));
     setCursor(rows.length ? rows[rows.length - 1].created_at : null);
     setReachedEnd(rows.length === 0);
     setLoading(false);
@@ -144,7 +167,8 @@ export function usePosts(currentUserId) {
       setReachedEnd(true);
       return;
     }
-    setPosts((prev) => [...prev, ...rows.map(toAppPost)]);
+    const more = await toAppPostsWithPolls(rows);
+    setPosts((prev) => [...prev, ...more]);
     setCursor(rows[rows.length - 1].created_at);
   }, [cursor, reachedEnd]);
 
@@ -223,11 +247,22 @@ export function usePosts(currentUserId) {
     [posts, currentUserId]
   );
 
+  // Optimistic: show the vote (and the results) immediately, roll back if it fails.
   const votePoll = useCallback(
     async (postId, optionId) => {
-      await postsApi.votePoll(postId, optionId, currentUserId);
+      // The post may not be in this list at all (e.g. voting from the
+      // post-detail page) — still send the vote, just skip the local update.
+      const target = posts.find((p) => p.id === postId);
+      const before = target?.poll;
+      setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, poll: applyVote(p.poll, optionId) } : p)));
+      try {
+        await postsApi.votePoll(postId, optionId, currentUserId);
+      } catch (err) {
+        if (target) setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, poll: before } : p)));
+        throw err;
+      }
     },
-    [currentUserId]
+    [posts, currentUserId]
   );
 
   return {
@@ -420,7 +455,22 @@ export function usePostActions(posts, setPosts, currentUserId, { removeOnUnbookm
     [setPosts]
   );
 
-  const votePoll = useCallback(async (postId, optionId) => postsApi.votePoll(postId, optionId, currentUserId), [currentUserId]);
+  const votePoll = useCallback(
+    async (postId, optionId) => {
+      // The post may not be in this list at all (e.g. voting from the
+      // post-detail page) — still send the vote, just skip the local update.
+      const target = posts.find((p) => p.id === postId);
+      const before = target?.poll;
+      setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, poll: applyVote(p.poll, optionId) } : p)));
+      try {
+        await postsApi.votePoll(postId, optionId, currentUserId);
+      } catch (err) {
+        if (target) setPosts((prev) => prev.map((p) => (p.id === postId ? { ...p, poll: before } : p)));
+        throw err;
+      }
+    },
+    [posts, setPosts, currentUserId]
+  );
 
   return { toggleLike, toggleRepost, toggleBookmark, togglePin, editPost, deletePost, votePoll };
 }
@@ -441,7 +491,7 @@ export function usePostList(loadFn, currentUserId, options) {
   const reload = useCallback(async () => {
     setLoading(true);
     const rows = await loadFn();
-    setPosts(rows.map(toAppPost));
+    setPosts(await toAppPostsWithPolls(rows));
     setLoading(false);
   }, [loadFn]);
 
