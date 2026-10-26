@@ -8,7 +8,7 @@
 import { supabase } from "../supabaseClient";
 
 /** Search profiles by name or handle (case-insensitive substring match). */
-export async function searchProfiles(query, { limit = 10 } = {}) {
+export async function searchProfiles(query, { limit = 30 } = {}) {
   const q = query.trim();
   if (!q) return [];
   // Escape characters that are special inside a PostgREST .or() filter string.
