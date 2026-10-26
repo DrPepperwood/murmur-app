@@ -4,7 +4,7 @@ import { useAuth } from "./hooks/useAuth";
 import { setCurrentUser, getCurrentUser, allCachedProfiles, subscribeToProfileCache, cacheProfile, refreshProfile, idForSlug } from "./hooks/profileCache";
 import { useSocial } from "./hooks/useSocial";
 import { useMessages } from "./hooks/useMessages";
-import { usePosts, usePostDetail, usePostList, usePostActions, toAppPost } from "./hooks/usePosts";
+import { usePosts, usePostDetail, usePostList, usePostActions, useTrendingSource, toAppPost } from "./hooks/usePosts";
 import { useNotifications } from "./hooks/useNotifications";
 import * as postsApi from "./lib/api/posts";
 import * as profilesApi from "./lib/api/profiles";
@@ -138,11 +138,10 @@ const SEED_POSTS = [
 ];
 
 /**
- * Derive live trending hashtags from whatever posts are currently loaded.
- * Counts #tag occurrences across post text, ranks by count. This only sees
- * posts already in the loaded feed window (same caveat as the other
- * feed-derived views noted in the README) rather than a true site-wide
- * count, but it's real data, not the old hardcoded fake trends.
+ * Derive trending hashtags from a list of posts ({ text } rows). Counts
+ * #tag occurrences across post text (once per post), ranks by count. The
+ * app feeds it recent hashtag posts fetched site-wide (useTrendingSource),
+ * falling back to the loaded feed until that first fetch comes back.
  */
 function computeTrends(posts, limit = 5) {
   const counts = new Map();
@@ -1860,7 +1859,7 @@ function ProfilePage({ handle, onOpenPost, onOpenProfile, onBack, coverImage, se
   );
 }
 
-function SearchPage({ query, setQuery, posts, onLike, onRepost, onOpenPost, onOpenProfile, following, onToggleFollow, onBack, onQuote, onEdit, onDelete, onBookmark, bookmarks, blocked, onSearch, onVote, pinnedPostId, onTogglePin, onReport, reportedPosts }) {
+function SearchPage({ query, setQuery, posts, trends: trendsProp, onLike, onRepost, onOpenPost, onOpenProfile, following, onToggleFollow, onBack, onQuote, onEdit, onDelete, onBookmark, bookmarks, blocked, onSearch, onVote, pinnedPostId, onTogglePin, onReport, reportedPosts }) {
   const { profiles } = useContext(ProfilesContext);
   const [resultTab, setResultTab] = useState("top");
   const q = query.trim().toLowerCase();
@@ -1915,7 +1914,7 @@ function SearchPage({ query, setQuery, posts, onLike, onRepost, onOpenPost, onOp
     .filter(([h]) => h !== "you" && !following.has(h) && !blocked.has(h))
     .slice(0, 3);
   const popularPosts = [...posts].sort((a, b) => b.likes - a.likes).slice(0, 3);
-  const trends = computeTrends(posts);
+  const trends = trendsProp ?? computeTrends(posts);
 
   return (
     <div>
@@ -3320,7 +3319,7 @@ function ConversationPage({ handle, conversations, onSend, onOpenProfile, onBack
 }
 
 function PostPage({ postId, currentUserId, onLike, onRepost, onOpenProfile, onBack, onQuote, onEdit, onDelete, onBookmark, onVote, onTogglePin, blocked, onSearch, onViewAnalytics, onReport, reportedPosts }) {
-  const { post, loading, reload, addReply } = usePostDetail(postId);
+  const { post, loading, reload, addReply, toggleReplyLike, toggleReplyRepost, editReply, deleteReply } = usePostDetail(postId, currentUserId);
   const [composing, setComposing] = useState(false);
   const [replyDraft, setReplyDraft] = useState("");
   const [replyDraftImage, setReplyDraftImage] = useState(null);
@@ -3369,28 +3368,14 @@ function PostPage({ postId, currentUserId, onLike, onRepost, onOpenProfile, onBa
   const handleDelete = async (id) => { await onDelete(id); onBack(); };
 
   // Reply-level actions: replies are just posts with reply_to_id set, but
-  // they live only in this page's own reply tree (not the main feed list),
-  // so these call the API directly and refetch the tree afterward.
-  const handleReplyLike = async (replyId) => {
-    const target = findNode(post.replies, replyId);
-    if (!target) return;
-    await postsApi.toggleLike(replyId, currentUserId, target.liked);
-    reload();
-  };
-  const handleReplyRepost = async (replyId) => {
-    const target = findNode(post.replies, replyId);
-    if (!target) return;
-    await postsApi.toggleRepost(replyId, currentUserId, target.reposted);
-    reload();
-  };
-  const handleEditReply = async (replyId, text) => {
-    await postsApi.editPost(replyId, text);
-    reload();
-  };
-  const handleDeleteReply = async (replyId) => {
-    await postsApi.deletePost(replyId);
-    reload();
-  };
+  // they live only in this page's own reply tree (not the main feed list).
+  // These now update that tree in place (see usePostDetail's
+  // toggleReplyLike/etc.) instead of refetching the whole thread, so a
+  // reply reacts just as instantly as a top-level post does.
+  const handleReplyLike = toggleReplyLike;
+  const handleReplyRepost = toggleReplyRepost;
+  const handleEditReply = editReply;
+  const handleDeleteReply = deleteReply;
   const handleAddReply = async (targetId, text, image, imageFile) => {
     // targetId is null for a reply directly on the root post (vs. a reply to
     // a specific reply) — reply_to_id must point at the actual parent row,
@@ -3831,7 +3816,8 @@ export default function Murmur() {
   const visibleNotifications = notifications.filter((n) => !blocked.has(n.actor));
   const unreadCount = visibleNotifications.filter((n) => !n.read).length;
   const visiblePosts = posts.filter((p) => !hiddenAuthors.has(p.author));
-  const trends = useMemo(() => computeTrends(posts), [posts]);
+  const trendingRows = useTrendingSource(user?.id);
+  const trends = useMemo(() => computeTrends(trendingRows.length ? trendingRows : posts), [trendingRows, posts]);
 
   // --- Real DMs/group chats (Supabase), replacing the old mock
   // conversations/groupChats state and its setTimeout-simulated replies.
@@ -4164,6 +4150,7 @@ export default function Murmur() {
                 query={searchQuery}
                 setQuery={setSearchQuery}
                 posts={visiblePosts}
+                trends={trends}
                 onLike={toggleLike}
                 onRepost={toggleRepost}
                 onOpenPost={goPost}
