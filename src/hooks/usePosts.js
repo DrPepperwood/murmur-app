@@ -40,6 +40,7 @@ export function toAppPost(row) {
     id: row.id,
     author: slugForId(row.author_id) ?? row.author_handle?.slice(1),
     time: timeAgo(row.created_at),
+    createdAt: row.created_at,
     text: row.text,
     image: row.video_url ?? row.image_url ?? null, // MediaContent in the app already detects video vs image by URL/prefix
     likes: row.like_count,
