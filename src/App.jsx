@@ -4,7 +4,7 @@ import { useAuth } from "./hooks/useAuth";
 import { setCurrentUser, getCurrentUser, allCachedProfiles, subscribeToProfileCache, cacheProfile, refreshProfile, idForSlug } from "./hooks/profileCache";
 import { useSocial } from "./hooks/useSocial";
 import { useMessages } from "./hooks/useMessages";
-import { usePosts, usePostDetail, usePostList, usePostActions, useTrendingSource, toAppPost } from "./hooks/usePosts";
+import { usePosts, usePostDetail, usePostList, usePostActions, useTrendingSource, toAppPost, toAppPostsWithPolls } from "./hooks/usePosts";
 import { useNotifications } from "./hooks/useNotifications";
 import * as postsApi from "./lib/api/posts";
 import * as profilesApi from "./lib/api/profiles";
@@ -899,7 +899,7 @@ function PollDisplay({ poll, isOwnPost, onVote }) {
         );
       })}
       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: PALETTE.inkSoft, marginTop: 4 }}>
-        {totalVotes} {totalVotes === 1 ? "vote" : "votes"} · {poll.duration}
+        {totalVotes} {totalVotes === 1 ? "vote" : "votes"}{poll.duration ? ` · ${poll.duration}` : ""}
       </div>
     </div>
   );
@@ -1462,7 +1462,7 @@ function BackBar({ onBack, label }) {
   );
 }
 
-function ProfilePage({ handle, onOpenPost, onOpenProfile, onBack, coverImage, setCoverImage, isFollowing, onToggleFollow, followingCount, onMessage, onQuote, isBlocked, isMuted, onToggleBlock, onToggleMute, onOpenSettings, onSearch, onVote, onReport, reportedPosts, onReportProfile, reportedProfiles, onViewAnalytics }) {
+function ProfilePage({ handle, onOpenPost, onOpenProfile, onBack, coverImage, setCoverImage, isFollowing, onToggleFollow, followingCount, onMessage, onQuote, isBlocked, isMuted, onToggleBlock, onToggleMute, onOpenSettings, onSearch, onReport, reportedPosts, onReportProfile, reportedProfiles, onViewAnalytics }) {
   const { profiles, updateProfile, isMobile } = useContext(ProfilesContext);
   const user = profiles[handle];
   // Fetches this person's actual posts straight from the backend, instead
@@ -1474,7 +1474,7 @@ function ProfilePage({ handle, onOpenPost, onOpenProfile, onBack, coverImage, se
   const {
     posts: authored, loading: postsLoading,
     toggleLike: onLike, toggleRepost: onRepost, toggleBookmark: onBookmark, togglePin: onTogglePin,
-    editPost: onEdit, deletePost: onDelete,
+    editPost: onEdit, deletePost: onDelete, votePoll: onVote,
   } = usePostList(loadAuthored, getCurrentUser());
   const pinnedPost = authored.find((p) => p.isPinned);
   const restPosts = pinnedPost ? authored.filter((p) => p.id !== pinnedPost.id) : authored;
@@ -1886,14 +1886,14 @@ function SearchPage({ query, setQuery, posts, trends: trendsProp, onLike, onRepo
   useEffect(() => {
     if (!q) { setMatchedPosts([]); return; }
     const t = setTimeout(() => {
-      postsApi.searchPosts(q).then((rows) => setMatchedPosts(rows.map(toAppPost))).catch(() => setMatchedPosts([]));
+      postsApi.searchPosts(q).then((rows) => toAppPostsWithPolls(rows)).then((mapped) => setMatchedPosts(mapped)).catch(() => setMatchedPosts([]));
     }, 300);
     return () => clearTimeout(t);
   }, [q]);
   const currentUserId = getCurrentUser();
   const {
     toggleLike: searchLike, toggleRepost: searchRepost, toggleBookmark: searchBookmark,
-    togglePin: searchTogglePin, editPost: searchEdit, deletePost: searchDelete,
+    togglePin: searchTogglePin, editPost: searchEdit, deletePost: searchDelete, votePoll: searchVote,
   } = usePostActions(matchedPosts, setMatchedPosts, currentUserId);
   const photoPosts = matchedPosts.filter((p) => p.image);
 
@@ -2072,7 +2072,7 @@ function SearchPage({ query, setQuery, posts, trends: trendsProp, onLike, onRepo
           ) : (
             <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden" }}>
               {matchedPosts.map((post) => (
-                <Post key={post.id} post={post} onLike={searchLike} onRepost={searchRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={searchEdit} onDelete={searchDelete} onBookmark={searchBookmark} bookmarked={post.bookmarked} onSearch={onSearch} onVote={onVote} isPinned={post.isPinned} onTogglePin={searchTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
+                <Post key={post.id} post={post} onLike={searchLike} onRepost={searchRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={searchEdit} onDelete={searchDelete} onBookmark={searchBookmark} bookmarked={post.bookmarked} onSearch={onSearch} onVote={searchVote} isPinned={post.isPinned} onTogglePin={searchTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
               ))}
             </div>
           )}
@@ -2091,7 +2091,7 @@ function SearchPage({ query, setQuery, posts, trends: trendsProp, onLike, onRepo
           ) : (
             <div style={{ background: PALETTE.card, border: `1px solid ${PALETTE.border}`, borderRadius: 14, overflow: "hidden" }}>
               {photoPosts.map((post) => (
-                <Post key={post.id} post={post} onLike={searchLike} onRepost={searchRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={searchEdit} onDelete={searchDelete} onBookmark={searchBookmark} bookmarked={post.bookmarked} onSearch={onSearch} onVote={onVote} isPinned={post.isPinned} onTogglePin={searchTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
+                <Post key={post.id} post={post} onLike={searchLike} onRepost={searchRepost} onOpen={onOpenPost} onOpenProfile={onOpenProfile} onQuote={onQuote} onEdit={searchEdit} onDelete={searchDelete} onBookmark={searchBookmark} bookmarked={post.bookmarked} onSearch={onSearch} onVote={searchVote} isPinned={post.isPinned} onTogglePin={searchTogglePin} onReport={onReport} isReported={reportedPosts.has(post.id)} />
               ))}
             </div>
           )}
@@ -2394,7 +2394,7 @@ function PostAnalyticsPage({ postId, posts, onBack }) {
   );
 }
 
-function BookmarksPage({ onOpenPost, onOpenProfile, onQuote, onBack, onSearch, onVote, onReport, reportedPosts }) {
+function BookmarksPage({ onOpenPost, onOpenProfile, onQuote, onBack, onSearch, onReport, reportedPosts }) {
   // Fetches your actual bookmarked posts from the backend instead of
   // filtering whatever's already loaded into the main feed (the old
   // approach — a bookmark outside that loaded page just wouldn't show up
@@ -2404,7 +2404,7 @@ function BookmarksPage({ onOpenPost, onOpenProfile, onQuote, onBack, onSearch, o
   const loadBookmarks = useCallback(() => (currentUserId ? postsApi.fetchBookmarks(currentUserId) : Promise.resolve([])), [currentUserId]);
   const {
     posts: list, loading,
-    toggleLike: onLike, toggleRepost: onRepost, toggleBookmark: onBookmark, togglePin: onTogglePin, editPost: onEdit, deletePost: onDelete,
+    toggleLike: onLike, toggleRepost: onRepost, toggleBookmark: onBookmark, togglePin: onTogglePin, editPost: onEdit, deletePost: onDelete, votePoll: onVote,
   } = usePostList(loadBookmarks, currentUserId, { removeOnUnbookmark: true });
   return (
     <div>
@@ -2502,7 +2502,7 @@ function ListsPage({ lists, onOpenList, onCreateList, onBack }) {
   );
 }
 
-function ListDetailPage({ listId, lists, onOpenPost, onOpenProfile, onQuote, onSearch, onVote, onAddMember, onRemoveMember, onDeleteList, onBack, blocked, onReport, reportedPosts }) {
+function ListDetailPage({ listId, lists, onOpenPost, onOpenProfile, onQuote, onSearch, onAddMember, onRemoveMember, onDeleteList, onBack, blocked, onReport, reportedPosts }) {
   const { profiles } = useContext(ProfilesContext);
   const list = lists[listId];
 
@@ -2518,7 +2518,7 @@ function ListDetailPage({ listId, lists, onOpenPost, onOpenProfile, onQuote, onS
   const currentUserId = getCurrentUser();
   const {
     posts: listPosts, loading: listPostsLoading,
-    toggleLike: onLike, toggleRepost: onRepost, toggleBookmark: onBookmark, togglePin: onTogglePin, editPost: onEdit, deletePost: onDelete,
+    toggleLike: onLike, toggleRepost: onRepost, toggleBookmark: onBookmark, togglePin: onTogglePin, editPost: onEdit, deletePost: onDelete, votePoll: onVote,
   } = usePostList(loadListPosts, currentUserId);
 
   if (!list) {
